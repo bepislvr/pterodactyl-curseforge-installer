@@ -1,0 +1,9 @@
+# Registers the client UI page as a server subpage.
+# The file must be named "Components.yml" (capital C) and live in the directory bound to
+# `dashboard.components` in conf.yml. Component paths are relative to that directory, without extension.
+#
+# `Permission` is read by Blueprint's install.sh but is not in the public docs. The value is pasted
+# verbatim into routes.ts as a TypeScript expression, so it carries its own single quotes.
+Navigation:
+  Routes:
+    - { Name: 'Modpack Installer', Path: '/modpack-installer', Type: 'server', Component: 'ModpackInstaller', Permission: "'file.create'", AdminOnly: 'false' }
