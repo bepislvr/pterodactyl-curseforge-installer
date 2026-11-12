@@ -139,8 +139,17 @@ const ModpackInstaller = () => {
                 { timeout: INSTALL_TIMEOUT_MS }
             );
             setDone(`Installed ${data.file}. Check the Files tab, then restart or reinstall the server as your egg requires.`);
-        } catch (e) {
-            setError(errorMessage(e));
+        } catch (e: any) {
+            const status = e?.response?.status;
+            if (status === 502 || status === 504 || e?.code === 'ECONNABORTED') {
+                // The web server (or the browser) stopped waiting, but the panel keeps running the install on the node.
+                setError(
+                    'The request timed out before the install finished. It may still be running on the node: ' +
+                        'check the Files tab in a few minutes before trying again.'
+                );
+            } else {
+                setError(errorMessage(e));
+            }
         } finally {
             setBusy(false);
         }

@@ -4,8 +4,8 @@ Adds a "Modpack Installer" page to each server in Pterodactyl. A user pastes a C
 modpack URL, slug or project ID (or searches and picks from the popular list), picks a version, and the extension downloads the modpack's
 official **server pack** straight onto the server (via Wings) and extracts it.
 
-**Status: v0.1. Builds and runs on Pterodactyl 1.15.2 + Blueprint beta-2026-08. Not yet tested with Wings or a real
-CurseForge API key**, so no real download or extraction has happened. See `CLAUDE.md` ("Run record") for what was tested.
+**Status: v0.1. Builds and runs on Pterodactyl 1.15.2 + Blueprint beta-2026-08 + Wings 1.13.5. Not yet tested with a real
+CurseForge API key**: Wings download and extraction were tested with locally served sample zips only. See `CLAUDE.md` ("Run record").
 
 ## Scope (deliberately small)
 
@@ -22,6 +22,7 @@ CurseForge API key**, so no real download or extraction has happened. See `CLAUD
 | `admin/` | Admin page for the CurseForge API key |
 | `app/CurseForgeClient.php` | CurseForge API wrapper (namespace `Pterodactyl\BlueprintFramework\Extensions\modpackinstaller`, symlinked by Blueprint) |
 | `app/ModpackInstallerController.php` | `search`, `resolve` and `install` endpoints |
+| `app/WingsPackInstaller.php` | Has Wings pull the archive into the server root, extract it, then delete the archive |
 | `routers/client.php` | Server-scoped routes |
 | `dashboard/` | React page and `Components.yml` registration (this directory is `dashboard.components`) |
 
@@ -46,7 +47,7 @@ All endpoints are POST, require the `file.create` server permission, and return 
 ## Verify on a dev panel
 
 `blueprint -build` passes and the admin page, routes, autoloading and server page were checked on a real panel
-(see `CLAUDE.md`, "Run record (phase 2)"). Not yet done: real CurseForge data and a real Wings download/extraction.
+(see `CLAUDE.md`, "Run record"). Not yet done: anything that needs a real CurseForge API key.
 
 Note: don't use Blueprint's `{appcontext}` placeholder in this extension. On beta-2026-08 its sed replacement drops the
 backslashes, so the namespace is written out literally.
@@ -75,8 +76,16 @@ shapes on real data (game 432, class 4471, nullable `downloadUrl`, forgecdn host
 ## Known limits
 
 - Authors can disable third-party downloads; those packs return an error with a manual-download hint.
-- The install call blocks until Wings finishes the download and extraction. The browser waits up to 15 minutes, but the
-  official Pterodactyl nginx config sets `fastcgi_read_timeout 300`, so a pack that takes longer gets a 504 while the
-  install continues on the node.
+- The install call blocks until Wings finishes the download and extraction. Measured on a test VM:
+  - nginx (`fastcgi_read_timeout 300` in the official config) returns 504 at 300 s. PHP keeps going and the install
+    finishes; the UI says the install may still be running and to check the Files tab.
+  - The panel stops waiting for the download after 600 s. Wings keeps downloading and leaves the archive in the server
+    root unextracted; the UI says so. Extract it from the Files tab.
+  - Raising `fastcgi_read_timeout` on the panel's nginx avoids the 504 for slow nodes.
+- Downloads go through Wings, which refuses redirects and private/internal addresses. CurseForge's `edge.forgecdn.net`
+  redirects, so the panel resolves CDN redirects first (every hop must be https on forgecdn.net/curseforge.com).
+- Search, resolve and install count against the panel's per-user client API rate limit (256 requests/minute by default),
+  shared with the rest of the panel UI.
 - Extraction can overwrite existing files. The UI warns, but there is no automatic backup yet.
+- The downloaded archive is deleted after a successful extraction and kept if extraction fails.
 - Check CurseForge's API terms to confirm your use case is allowed.

@@ -17,6 +17,7 @@ class CurseForgeClient
     private const BASE_URL = 'https://api.curseforge.com';
     private const GAME_ID_MINECRAFT = 432;
     private const CLASS_ID_MODPACKS = 4471;
+    private const MAX_CDN_REDIRECTS = 3;
 
     public function __construct(private BlueprintExtensionLibrary $blueprint)
     {
@@ -205,6 +206,61 @@ class CurseForgeClient
             );
         }
 
-        return ['url' => $url, 'fileName' => $file['fileName']];
+        return ['url' => $this->resolveCdnUrl((string) $url), 'fileName' => $file['fileName']];
+    }
+
+    /** https and a CurseForge host. The only URLs ever handed to Wings. */
+    public static function isAllowedDownloadUrl(string $url): bool
+    {
+        $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+        $host = (string) (parse_url($url, PHP_URL_HOST) ?: '');
+
+        return $scheme === 'https' && preg_match('/(^|\.)(forgecdn\.net|curseforge\.com)$/i', $host) === 1;
+    }
+
+    /** scheme://host of a URL, for error messages. */
+    public static function describeUrl(string $url): string
+    {
+        return strtolower((string) parse_url($url, PHP_URL_SCHEME)) . '://' . (parse_url($url, PHP_URL_HOST) ?: '');
+    }
+
+    /**
+     * Follow CDN redirects on the panel side and return the final URL.
+     *
+     * Wings never follows redirects (it fails with "got bad response status from endpoint: 302 Found"), and
+     * edge.forgecdn.net answers every file with a 302 to mediafilez.forgecdn.net. Every hop must pass
+     * isAllowedDownloadUrl(), so a redirect off the CurseForge CDN is refused, not followed.
+     */
+    public function resolveCdnUrl(string $url): string
+    {
+        // Wings parses the URL with Go's net/url; CurseForge file names can contain spaces.
+        $url = str_replace(' ', '%20', $url);
+
+        for ($hop = 0; $hop <= self::MAX_CDN_REDIRECTS; $hop++) {
+            if (!self::isAllowedDownloadUrl($url)) {
+                throw new CurseForgeException('Refusing to download from an unexpected location: ' . self::describeUrl($url));
+            }
+
+            try {
+                $res = Http::withoutRedirecting()->timeout(20)->head($url);
+            } catch (ConnectionException $e) {
+                throw new CurseForgeException('Could not reach the CurseForge download server. Please try again.');
+            }
+
+            if ($res->successful()) {
+                return $url;
+            }
+
+            $location = $res->redirect() ? trim((string) $res->header('Location')) : '';
+            if ($location === '') {
+                throw new CurseForgeException('The CurseForge download server returned HTTP ' . $res->status() . ' for this file.');
+            }
+            if (str_starts_with($location, '/') && !str_starts_with($location, '//')) {
+                $location = self::describeUrl($url) . $location;
+            }
+            $url = str_replace(' ', '%20', $location);
+        }
+
+        throw new CurseForgeException('Too many redirects from the CurseForge download server.');
     }
 }

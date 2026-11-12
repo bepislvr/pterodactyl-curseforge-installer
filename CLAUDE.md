@@ -55,14 +55,13 @@ Corrected
   handling for CurseForge calls, skip of `isAvailable: false` files.
 - Admin view no longer echoes the stored API key into the HTML; blank field keeps the current key.
 
-Still unknown (needs Wings and a real CurseForge API key)
+Still unknown (needs a real CurseForge API key)
 - CurseForge: game ID 432 and class ID 4471 are not stated in the docs; only seen in third-party usage
   (itzg/docker-minecraft-server issue 3591). `downloadUrl` is documented as a plain string; null when the author disables
   distribution is community knowledge, handled defensively.
-- The CDN allowlist (`forgecdn.net`, `curseforge.com`): the docs do not name download hosts. `edge.forgecdn.net` and
-  `mediafilez.forgecdn.net` are expected and match; confirm with a real pack.
-- Real download + extraction by Wings, and whether a large pack finishes inside nginx `fastcgi_read_timeout`
-  (300s in the official Pterodactyl nginx config; the controller allows 600s pull + up to 15 min extract).
+- Which host CurseForge's `downloadUrl` uses, and that the redirect chain ends in a 200 for a real file
+  (only a made-up path was tried: edge.forgecdn.net 302 -> mediafilez.forgecdn.net 403).
+- Response shapes on real data (search, files, pagination), and the full install of a real pack.
 - Test with 2-3 real packs, one without a server pack, one with downloads disabled.
 
 ## Run record (phase 2, 2026-11-12, executed on a test VM)
@@ -100,6 +99,42 @@ Verified by running
   `/api/servers/{uuid}/files/pull` with `url, root "/", file_name, use_header false, foreground true` and the node's bearer token,
   then `/files/decompress` with `root, file`; `fileName` path traversal is stripped by `basename`; non-https and lookalike
   hosts (`forgecdn.net.evil.com`) are refused; Wings 400s and an unreachable node become 422 `{"error": ...}`.
+
+## Run record (phase 2b, 2026-11-12: Wings, no CurseForge key)
+
+Setup: Docker 29.9.3 (get.docker.com) and Wings v1.13.5 per the official docs on the same VM; location, node
+(192.168.178.133, http, :8080) and allocation :25565 created in the admin UI; server "Forge Modpack" from the stock
+Forge egg (MC 1.20.1, Java 17 image, egg install completed). No CurseForge API key: nothing was fetched from
+curseforge.com except the keyless/fake-key error checks against api.curseforge.com.
+
+Fixed by running it
+- Wings never follows redirects (downloader `CheckRedirect` returns `ErrUseLastResponse`) and fails a non-200 with a
+  generic 500. `edge.forgecdn.net` answers with `302 -> mediafilez.forgecdn.net` (seen with a keyless HEAD on a made-up
+  path). `CurseForgeClient::resolveCdnUrl()` now follows up to 3 redirects on the panel with HEAD; every hop and the final
+  URL must pass `isAllowedDownloadUrl()` (https + forgecdn.net/curseforge.com, unchanged), and a non-2xx end becomes a clear
+  error. Spaces are sent as `%20`. Checked with `Http::fake()` (off-CDN redirect, http downgrade, relative Location, loop,
+  missing Location: all refused or resolved correctly; no request to the off-CDN host).
+- The downloaded archive stayed in the server root after extraction (300 MB on the test pack). Now deleted after a
+  successful extraction, kept on failure.
+- After the 600 s pull timeout the user saw "Download failed", but Wings keeps downloading and leaves the archive
+  unextracted (observed: finished at 683 s). cURL errno 28 now gives a message saying so; errno 7 (node unreachable) keeps
+  "Download failed".
+- nginx 504 at 300 s showed "Request failed with status code 504" although the install finished (observed at 410 s).
+  The UI now says the install may still be running.
+- Wings calls moved to `WingsPackInstaller` (no behaviour change) so they can be exercised without the controller.
+
+Verified by running
+- Wings blocks private destinations (`remote_download_allowlist` empty): pull of http://192.168.178.133:8000/... ->
+  "The URL or IP address provided could not be resolved to a valid destination." No request reached the test server.
+- With the VM IP temporarily allowlisted in Wings (reverted afterwards), `WingsPackInstaller::pullAndExtract()` against
+  `python3 -m http.server`: small pack and a name with spaces (raw and %20) download and extract into the server root,
+  owned by `pterodactyl`; a 404 gives "Download failed: An unexpected error was encountered..." (Wings 500).
+- ~300 MB zip over LAN: pull 0.2 s, extract ~0.2 s, 0.4 s total, no timeouts.
+- Throttled ~300 MB: at 750 KB/s through nginx + PHP-FPM, nginx returned 504 at 300 s, PHP finished the install at
+  409.8 s; at 450 KB/s, Guzzle's pull timeout fired at 600.0 s.
+- Endpoints with no key and a fake key (CurseForge returned 403) all give 422 `{"error": ...}`; a subuser without
+  `file.create` gets 403 on all three endpoints; nav entry hidden for that subuser.
+- The panel's client API rate limit (256/min per user) returned 429 when two browser suites ran back to back.
 
 ## Search endpoint (phase 3; endpoint and UI run on the panel, not against real CurseForge data)
 
