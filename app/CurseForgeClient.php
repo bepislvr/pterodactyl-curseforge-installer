@@ -1,6 +1,6 @@
 <?php
 
-namespace {appcontext};
+namespace Pterodactyl\BlueprintFramework\Extensions\modpackinstaller;
 
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;

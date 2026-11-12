@@ -1,6 +1,6 @@
 <?php
 
-namespace {appcontext};
+namespace Pterodactyl\BlueprintFramework\Extensions\modpackinstaller;
 
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Exception\RequestException;
@@ -85,7 +85,7 @@ class ModpackInstallerController extends ClientApiController
         $scheme = strtolower((string) parse_url($download['url'], PHP_URL_SCHEME));
         $host = parse_url($download['url'], PHP_URL_HOST) ?: '';
         if ($scheme !== 'https' || !preg_match('/(^|\.)(forgecdn\.net|curseforge\.com)$/i', $host)) {
-            return new JsonResponse(['error' => 'Unexpected download host: ' . $host], 422);
+            return new JsonResponse(['error' => 'Refusing to download from an unexpected location: ' . $scheme . '://' . $host], 422);
         }
 
         $fileName = basename($download['fileName']);
@@ -117,7 +117,11 @@ class ModpackInstallerController extends ClientApiController
         try {
             $repo->decompressFile('/', $fileName);
         } catch (DaemonConnectionException $e) {
-            return new JsonResponse(['error' => 'Extraction failed: ' . $e->getMessage()], 422);
+            // DaemonConnectionException wraps the Guzzle error; read Wings' own message from it when there is one.
+            $prev = $e->getPrevious();
+            $msg = $prev instanceof GuzzleException ? $this->wingsMessage($prev) : $e->getMessage();
+
+            return new JsonResponse(['error' => 'Extraction failed: ' . $msg], 422);
         }
 
         return new JsonResponse(['status' => 'installed', 'file' => $fileName]);

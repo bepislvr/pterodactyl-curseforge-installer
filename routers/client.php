@@ -2,7 +2,7 @@
 
 use Illuminate\Support\Facades\Route;
 use Pterodactyl\Http\Middleware\Api\Client\Server\AuthenticateServerAccess;
-use {appcontext}\ModpackInstallerController;
+use Pterodactyl\BlueprintFramework\Extensions\modpackinstaller\ModpackInstallerController;
 
 // Blueprint mounts this file under /api/client/extensions/modpackinstaller (routes/blueprint/client/modpackinstaller.php
 // inside Route::prefix('/modpackinstaller'), itself under /api/client/extensions) with the middleware groups

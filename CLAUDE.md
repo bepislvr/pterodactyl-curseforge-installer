@@ -8,10 +8,10 @@ Read `README.md` first for scope. Keep scope small: server packs only; search/br
 This scaffold was written from memory without a running panel. Make it actually work.
 
 1. (Done by reading, see Verification record.)
-2. Get `blueprint -build` passing on a dev panel and fix whatever breaks.
-3. Test with 2-3 real packs that have server packs, plus one without a server pack, plus one
+2. (Done, see "Run record (phase 2)".) `blueprint -build` passes on a real panel.
+3. Needs Wings + a real CurseForge API key. Test with 2-3 real packs that have server packs, plus one without a server pack, plus one
    with downloads disabled, and confirm each error path shows a clear message.
-4. Then work through the roadmap below. (Search UI is done, see below; untested on a panel.)
+4. Then work through the roadmap below. (Search UI is done and runs on the panel; not yet tried with real CurseForge data.)
 
 ## Verification record (phase 1, by reading sources; nothing was run)
 
@@ -39,8 +39,8 @@ Corrected
 - `conf.yml`: `target` is now `beta-2026-08`. `icon: "icon.jpg"` pointed at a missing file (fatal at install), now empty.
   `dashboard.components` must be a directory, not a file. `requests.app` is symlinked to
   `app/BlueprintFramework/Extensions/modpackinstaller`, it does NOT merge into the panel `app/`.
-- PHP classes moved to flat files under `app/` using the `{appcontext}` namespace placeholder
-  (`Pterodactyl\BlueprintFramework\Extensions\modpackinstaller`). The old `Pterodactyl\Services\...` and
+- PHP classes moved to flat files under `app/` in namespace `Pterodactyl\BlueprintFramework\Extensions\modpackinstaller`
+  (written literally; the `{appcontext}` placeholder is broken, see phase 2). The old `Pterodactyl\Services\...` and
   `Pterodactyl\Http\Controllers\...` namespaces would never have been installed. `CurseForgeException` split to its own file for PSR-4.
 - `dashboard/components.yml` is now `dashboard/Components.yml` (case matters) with the real schema:
   `Navigation.Routes[]` with `Name`, `Path`, `Type: server`, `Component`, `Permission`, `AdminOnly`. The old
@@ -55,19 +55,53 @@ Corrected
   handling for CurseForge calls, skip of `isAvailable: false` files.
 - Admin view no longer echoes the stored API key into the HTML; blank field keeps the current key.
 
-Still unknown (needs a real panel)
-- `Permission: "'file.create'"` in Components.yml: install.sh pastes it raw into TypeScript. By reading the bash YAML
-  parser the inner quotes should survive, but it was not executed. If the build fails in routes.ts, drop `Permission`.
-- Whether PSR-4 resolves classes through the `app/BlueprintFramework/Extensions` symlink on the panel (no optimized/authoritative classmap).
+Still unknown (needs Wings and a real CurseForge API key)
 - CurseForge: game ID 432 and class ID 4471 are not stated in the docs; only seen in third-party usage
-  (itzg/docker-minecraft-server issue 3591). `downloadUrl` is documented as a plain string, null when the author disables
+  (itzg/docker-minecraft-server issue 3591). `downloadUrl` is documented as a plain string; null when the author disables
   distribution is community knowledge, handled defensively.
 - The CDN allowlist (`forgecdn.net`, `curseforge.com`): the docs do not name download hosts. `edge.forgecdn.net` and
   `mediafilez.forgecdn.net` are expected and match; confirm with a real pack.
-- Whether PHP/web server timeouts allow a multi-minute blocking install (`set_time_limit(900)` is set; nginx/FPM limits are the host's).
+- Real download + extraction by Wings, and whether a large pack finishes inside nginx `fastcgi_read_timeout`
+  (300s in the official Pterodactyl nginx config; the controller allows 600s pull + up to 15 min extract).
 - Test with 2-3 real packs, one without a server pack, one with downloads disabled.
 
-## Search endpoint (phase 3, not run on a panel)
+## Run record (phase 2, 2026-11-12, executed on a test VM)
+
+Setup: Ubuntu 26.04, Pterodactyl panel v1.15.2 per the official docs (nginx, plain http, MariaDB, Redis, pteroq), but
+PHP 8.5 from Ubuntu because the ondrej PPA has no 26.04 build (composer constraint `^8.2 || ^8.3` accepts it).
+reCAPTCHA disabled in `.env` for scripted logins. Blueprint beta-2026-08 per its docs, developer mode on. No Wings, no Docker.
+
+Fixed by running it
+- `{appcontext}` is broken on beta-2026-08: install.sh does `sed "s~{appcontext}~Pterodactyl\BlueprintFramework\Extensions\$identifier~g"`
+  and GNU sed treats `\B`, `\E`, `\m` in the replacement as escapes, giving `PterodactylBlueprintFrameworkxtensionsmodpackinstaller`
+  (route:list failed with class not found). The namespace is now written literally in `app/*.php` and `routers/client.php`.
+- The panel's axios instance (`@/api/http`) has a 20s timeout, so the browser gave up on `/install` long before Wings finished.
+  The install call now passes its own 15 minute timeout.
+- UI error text used only `response.data.error`, so 403s and validation errors (`{"errors":[{detail}]}`) showed
+  "Request failed with status code 422". Now uses the panel's `httpErrorToHuman`, which handles both.
+- Clearer messages for a non-https download URL and for Wings extraction errors (no more "(request id: )").
+
+Verified by running
+- `blueprint -build` succeeds (only warning: no icon); webpack compiles; `tsc --noEmit` reports no errors in the extension
+  (two pre-existing i18n type errors in the stock panel).
+- `Permission: "'file.create'"` lands in routes.ts as `permission: 'file.create'`; nav entry shows for the owner and is hidden for
+  a subuser without `file.create`, whose direct URL gets the panel's "Access Denied" page.
+- `route:list`: admin GET/PATCH and client POST search/resolve/install, client routes with middleware `blueprint/api`,
+  `RequireTwoFactorAuthentication`, `blueprint/client-api`, `throttle:api.client`, `AuthenticateServerAccess`.
+- PSR-4 autoloads the classes through the `app/BlueprintFramework/Extensions/modpackinstaller` symlink even with
+  `composer install --optimize-autoloader` (classes are not in the classmap; PSR-4 fallback works). Container resolves all classes.
+- Admin page renders; saving stores `modpackinstaller::api_key`; the key is not echoed; a blank save keeps it.
+- Client API through the full HTTP stack: a bad key gives 422 `{"error":"CurseForge rejected the API key (HTTP 403)..."}`
+  (real call to api.curseforge.com), a subuser without `file.create` gets 403, unknown server 404, bad input 422 validation.
+- Server page in headless Chromium: renders, shows backend errors, and (with the three endpoints mocked in the browser)
+  list, server pack badge, load more, debounce, empty state, result click to resolve, version select, install busy state,
+  success message, and "no server pack" / "downloads disabled" errors.
+- Install controller against a fake Wings on the node address (CurseForge lookup stubbed in a test script): posts
+  `/api/servers/{uuid}/files/pull` with `url, root "/", file_name, use_header false, foreground true` and the node's bearer token,
+  then `/files/decompress` with `root, file`; `fileName` path traversal is stripped by `basename`; non-https and lookalike
+  hosts (`forgecdn.net.evil.com`) are refused; Wings 400s and an unreachable node become 422 `{"error": ...}`.
+
+## Search endpoint (phase 3; endpoint and UI run on the panel, not against real CurseForge data)
 
 `POST .../servers/{server}/search` with `query` (optional, max 100), `index` (0-9950), `page_size` (1-50, default 20).
 Same `file.create` check and `{"error": ...}`/422 shape as the other endpoints. Backend `CurseForgeClient::searchModpacks()`

@@ -32,7 +32,8 @@ data:
 requests:
   views: ""
   # Directory is symlinked to app/BlueprintFramework/Extensions/modpackinstaller.
-  # PHP files in it use the namespace placeholder {appcontext}.
+  # PHP files in it use the literal namespace Pterodactyl\BlueprintFramework\Extensions\modpackinstaller.
+  # Do not use the {appcontext} placeholder: on beta-2026-08 GNU sed eats its backslashes (see CLAUDE.md).
   app: "app"
   routers:
     application: ""
