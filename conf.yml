@@ -4,10 +4,12 @@ info:
   description: "Install CurseForge modpack server packs onto a Minecraft server from the server page."
   flags: ""
   version: "0.1.0"
-  # TODO: set to the Blueprint release you develop against (see Blueprint docs)
-  target: "beta-2025-01"
+  # Latest Blueprint release at time of writing (supports Pterodactyl 1.15.x).
+  # A mismatch only produces a warning, but keep it in sync with the panel you test on.
+  target: "beta-2026-08"
   author: "you@example.com"
-  icon: "icon.jpg"
+  # No icon file ships yet. A non-empty value that points to a missing file is a fatal install error.
+  icon: ""
   website: ""
 
 admin:
@@ -19,7 +21,8 @@ admin:
 dashboard:
   css: ""
   wrapper: ""
-  components: "dashboard/components.yml"
+  # A DIRECTORY containing Components.yml and the .tsx files it references.
+  components: "dashboard"
 
 data:
   directory: ""
@@ -28,8 +31,11 @@ data:
 
 requests:
   views: ""
+  # Directory is symlinked to app/BlueprintFramework/Extensions/modpackinstaller.
+  # PHP files in it use the namespace placeholder {appcontext}.
   app: "app"
   routers:
     application: ""
+    # Mounted under /api/client/extensions/modpackinstaller
     client: "routers/client.php"
     web: ""

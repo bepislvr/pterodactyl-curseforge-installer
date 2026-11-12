@@ -11,7 +11,7 @@
           id="api_key"
           name="api_key"
           class="form-control"
-          value="{{ $blueprint->dbGet('modpackinstaller', 'api_key') }}"
+          placeholder="{{ $hasKey ? 'A key is saved. Leave blank to keep it.' : 'Paste your API key' }}"
           autocomplete="off"
         />
         <p class="text-muted small">

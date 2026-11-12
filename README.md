@@ -18,10 +18,10 @@ official **server pack** straight onto the server (via Wings) and extracts it.
 |---|---|
 | `conf.yml` | Blueprint extension manifest |
 | `admin/` | Admin page for the CurseForge API key |
-| `app/Services/ModpackInstaller/CurseForgeClient.php` | CurseForge API wrapper |
-| `app/Http/Controllers/Api/Client/Extensions/ModpackInstaller/` | `resolve` and `install` endpoints |
+| `app/CurseForgeClient.php` | CurseForge API wrapper (namespace `{appcontext}`, symlinked by Blueprint) |
+| `app/ModpackInstallerController.php` | `resolve` and `install` endpoints |
 | `routers/client.php` | Server-scoped routes |
-| `dashboard/` | React page and `components.yml` registration |
+| `dashboard/` | React page and `Components.yml` registration (this directory is `dashboard.components`) |
 
 ## Install (dev)
 

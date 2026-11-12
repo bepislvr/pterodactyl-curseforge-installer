@@ -1,15 +1,16 @@
 <?php
 
-namespace Pterodactyl\Http\Controllers\Api\Client\Extensions\ModpackInstaller;
+namespace {appcontext};
 
+use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Exception\RequestException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException;
 use Pterodactyl\Http\Controllers\Api\Client\ClientApiController;
 use Pterodactyl\Models\Permission;
 use Pterodactyl\Models\Server;
 use Pterodactyl\Repositories\Wings\DaemonFileRepository;
-use Pterodactyl\Services\ModpackInstaller\CurseForgeClient;
-use Pterodactyl\Services\ModpackInstaller\CurseForgeException;
 
 class ModpackInstallerController extends ClientApiController
 {
@@ -57,21 +58,60 @@ class ModpackInstallerController extends ClientApiController
             return new JsonResponse(['error' => $e->getMessage()], 422);
         }
 
-        // Only allow CurseForge CDN hosts so the panel never pulls from an arbitrary URL.
+        // Only allow CurseForge CDN hosts over https so the panel never pulls from an arbitrary URL.
+        $scheme = strtolower((string) parse_url($download['url'], PHP_URL_SCHEME));
         $host = parse_url($download['url'], PHP_URL_HOST) ?: '';
-        if (!preg_match('/(^|\.)(forgecdn\.net|curseforge\.com)$/i', $host)) {
+        if ($scheme !== 'https' || !preg_match('/(^|\.)(forgecdn\.net|curseforge\.com)$/i', $host)) {
             return new JsonResponse(['error' => 'Unexpected download host: ' . $host], 422);
         }
 
         $fileName = basename($download['fileName']);
         $repo = $this->files->setServer($server);
 
-        // foreground=true blocks until Wings finishes the download, so we can decompress right after.
-        // TODO: large packs may exceed the HTTP timeout; consider polling Wings pull status instead.
-        $repo->pull($download['url'], '/', ['filename' => $fileName, 'use_header' => false, 'foreground' => true]);
-        $repo->decompressFile('/', $fileName);
+        // A large pack can take longer than PHP's execution limit.
+        @set_time_limit(900);
+
+        // DaemonFileRepository::pull() uses the panel's Guzzle timeout (GUZZLE_TIMEOUT, default 15s),
+        // which is too short for a foreground download. Same Wings endpoint, per-request timeout.
+        try {
+            $repo->getHttpClient()->post(
+                sprintf('/api/servers/%s/files/pull', $server->uuid),
+                [
+                    'json' => [
+                        'url' => $download['url'],
+                        'root' => '/',
+                        'file_name' => $fileName,
+                        'use_header' => false,
+                        'foreground' => true,
+                    ],
+                    'timeout' => 600,
+                ]
+            );
+        } catch (GuzzleException $e) {
+            return new JsonResponse(['error' => 'Download failed: ' . $this->wingsMessage($e)], 422);
+        }
+
+        try {
+            $repo->decompressFile('/', $fileName);
+        } catch (DaemonConnectionException $e) {
+            return new JsonResponse(['error' => 'Extraction failed: ' . $e->getMessage()], 422);
+        }
 
         return new JsonResponse(['status' => 'installed', 'file' => $fileName]);
+    }
+
+    /** Pull a human message out of a Wings error response (it uses "error" or "message"). */
+    private function wingsMessage(GuzzleException $e): string
+    {
+        if ($e instanceof RequestException && $e->hasResponse()) {
+            $body = json_decode((string) $e->getResponse()->getBody(), true);
+            $msg = is_array($body) ? ($body['error'] ?? $body['message'] ?? null) : null;
+            if ($msg) {
+                return (string) $msg;
+            }
+        }
+
+        return 'could not complete the transfer on the node. Please try again.';
     }
 
     private function requirePermission(Request $request, Server $server): void
