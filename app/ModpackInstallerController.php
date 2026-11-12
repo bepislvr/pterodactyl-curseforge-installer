@@ -43,6 +43,29 @@ class ModpackInstallerController extends ClientApiController
         return new JsonResponse(['modpack' => $mod, 'versions' => $versions]);
     }
 
+    /** Browse/search modpacks (most popular first). Paginated with index/page_size. */
+    public function search(Request $request, Server $server): JsonResponse
+    {
+        $this->requirePermission($request, $server);
+        $data = $request->validate([
+            'query' => 'nullable|string|max:100',
+            'index' => 'nullable|integer|min:0|max:9950',
+            'page_size' => 'nullable|integer|min:1|max:50',
+        ]);
+
+        try {
+            $result = $this->curseforge->searchModpacks(
+                $data['query'] ?? '',
+                (int) ($data['index'] ?? 0),
+                (int) ($data['page_size'] ?? 20)
+            );
+        } catch (CurseForgeException $e) {
+            return new JsonResponse(['error' => $e->getMessage()], 422);
+        }
+
+        return new JsonResponse($result);
+    }
+
     /** Download the server pack into the server's root and extract it. */
     public function install(Request $request, Server $server): JsonResponse
     {

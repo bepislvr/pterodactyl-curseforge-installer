@@ -9,10 +9,12 @@ use {appcontext}\ModpackInstallerController;
 // blueprint/api and blueprint/client-api (client bindings, so {server} resolves by uuid / uuidShort).
 //   POST /api/client/extensions/modpackinstaller/servers/{server}/resolve
 //   POST /api/client/extensions/modpackinstaller/servers/{server}/install
+//   POST /api/client/extensions/modpackinstaller/servers/{server}/search
 Route::group([
     'prefix' => '/servers/{server}',
     'middleware' => [AuthenticateServerAccess::class],
 ], function () {
     Route::post('/resolve', [ModpackInstallerController::class, 'resolve']);
+    Route::post('/search', [ModpackInstallerController::class, 'search']);
     Route::post('/install', [ModpackInstallerController::class, 'install']);
 });

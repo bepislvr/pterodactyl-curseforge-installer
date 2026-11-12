@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import http from '@/api/http';
 import { ServerContext } from '@/state/server';
 import ServerContentBlock from '@/components/elements/ServerContentBlock';
@@ -17,6 +17,27 @@ interface Resolved {
     versions: Version[];
 }
 
+interface SearchResult {
+    id: number;
+    name: string;
+    slug: string;
+    summary: string;
+    thumbnailUrl: string | null;
+    downloadCount: number;
+    hasServerPack: boolean;
+}
+
+interface SearchPage {
+    results: SearchResult[];
+    index: number;
+    pageSize: number;
+    totalCount: number;
+    hasMore: boolean;
+}
+
+const PAGE_SIZE = 20;
+const DEBOUNCE_MS = 400;
+
 const base = (uuid: string) => `/api/client/extensions/modpackinstaller/servers/${uuid}`;
 
 const errorMessage = (e: any): string => e?.response?.data?.error || e?.message || 'Something went wrong.';
@@ -24,19 +45,68 @@ const errorMessage = (e: any): string => e?.response?.data?.error || e?.message 
 const ModpackInstaller = () => {
     const uuid = ServerContext.useStoreState((state) => state.server.data!.uuid);
     const [query, setQuery] = useState('');
+
+    // Search/browse state. `searchText` is the raw input, `activeSearch` the debounced value in use.
+    const [searchText, setSearchText] = useState('');
+    const [activeSearch, setActiveSearch] = useState('');
+    const [results, setResults] = useState<SearchResult[]>([]);
+    const [hasMore, setHasMore] = useState(false);
+    const [searching, setSearching] = useState(false);
+    const [searchError, setSearchError] = useState<string | null>(null);
+    const [searched, setSearched] = useState(false);
+    const searchSeq = useRef(0);
     const [resolved, setResolved] = useState<Resolved | null>(null);
     const [selected, setSelected] = useState<number | null>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [done, setDone] = useState<string | null>(null);
 
-    const lookup = async () => {
+    // Debounce the search box.
+    useEffect(() => {
+        const t = setTimeout(() => setActiveSearch(searchText.trim()), DEBOUNCE_MS);
+        return () => clearTimeout(t);
+    }, [searchText]);
+
+    // Fetch a page of results. `append` is true for "Load more". Older in-flight responses are ignored.
+    const runSearch = useCallback(
+        async (text: string, index: number, append: boolean) => {
+            const seq = ++searchSeq.current;
+            setSearching(true);
+            setSearchError(null);
+            try {
+                const { data } = await http.post<SearchPage>(`${base(uuid)}/search`, {
+                    query: text,
+                    index,
+                    page_size: PAGE_SIZE,
+                });
+                if (seq !== searchSeq.current) return;
+                setResults((prev) => (append ? [...prev, ...data.results] : data.results));
+                setHasMore(data.hasMore);
+                setSearched(true);
+            } catch (e) {
+                if (seq !== searchSeq.current) return;
+                setSearchError(errorMessage(e));
+                if (!append) setResults([]);
+                setHasMore(false);
+            } finally {
+                if (seq === searchSeq.current) setSearching(false);
+            }
+        },
+        [uuid]
+    );
+
+    // New search whenever the debounced text changes (also loads the popular list on first render).
+    useEffect(() => {
+        runSearch(activeSearch, 0, false);
+    }, [activeSearch, runSearch]);
+
+    const lookup = async (reference: string = query) => {
         setBusy(true);
         setError(null);
         setDone(null);
         setResolved(null);
         try {
-            const { data } = await http.post(`${base(uuid)}/resolve`, { query });
+            const { data } = await http.post(`${base(uuid)}/resolve`, { query: reference });
             setResolved(data);
             setSelected(data.versions[0]?.serverPackFileId ?? null);
         } catch (e) {
@@ -71,10 +141,67 @@ const ModpackInstaller = () => {
 
     return (
         <ServerContentBlock title={'Modpack Installer'}>
-            <div className={'mb-4'}>
+            <div className={'mb-6'}>
                 <p className={'text-sm text-neutral-300 mb-2'}>
-                    Paste a CurseForge modpack URL, slug or project ID. Only modpacks with an official server pack are supported.
+                    Search CurseForge modpacks, or paste a URL, slug or project ID below. Only modpacks with an
+                    official server pack are supported.
                 </p>
+                <input
+                    className={'w-full p-2 rounded bg-neutral-900 text-neutral-100'}
+                    placeholder={'Search modpacks...'}
+                    value={searchText}
+                    onChange={(e) => setSearchText(e.target.value)}
+                />
+                {searchError && <p className={'text-red-400 mt-2'}>{searchError}</p>}
+                {!searchError && searching && results.length === 0 && (
+                    <p className={'text-sm text-neutral-400 mt-2'}>Searching...</p>
+                )}
+                {!searchError && searched && !searching && results.length === 0 && (
+                    <p className={'text-sm text-neutral-400 mt-2'}>No modpacks found.</p>
+                )}
+                {results.length > 0 && (
+                    <ul className={'mt-2'}>
+                        {results.map((r) => (
+                            <li
+                                key={r.id}
+                                className={'flex items-start p-2 mb-1 rounded bg-neutral-900 cursor-pointer hover:bg-neutral-800'}
+                                onClick={() => {
+                                    if (busy) return;
+                                    setQuery(String(r.id));
+                                    lookup(String(r.id));
+                                }}
+                            >
+                                {r.thumbnailUrl ? (
+                                    <img src={r.thumbnailUrl} alt={''} className={'w-12 h-12 rounded mr-3 flex-none'} />
+                                ) : (
+                                    <div className={'w-12 h-12 rounded mr-3 flex-none bg-neutral-700'} />
+                                )}
+                                <div className={'min-w-0'}>
+                                    <div className={'text-neutral-100'}>
+                                        {r.name}
+                                        {r.hasServerPack && (
+                                            <span className={'ml-2 text-xs text-green-400'}>server pack</span>
+                                        )}
+                                    </div>
+                                    <div className={'text-sm text-neutral-400'}>{r.summary}</div>
+                                    <div className={'text-xs text-neutral-500'}>
+                                        {r.downloadCount.toLocaleString()} downloads
+                                    </div>
+                                </div>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+                {hasMore && (
+                    <div className={'mt-2'}>
+                        <Button disabled={searching} onClick={() => runSearch(activeSearch, results.length, true)}>
+                            {searching ? 'Loading...' : 'Load more'}
+                        </Button>
+                    </div>
+                )}
+            </div>
+            <div className={'mb-4'}>
+                <p className={'text-sm text-neutral-300 mb-2'}>Or paste a CurseForge modpack URL, slug or project ID.</p>
                 <input
                     className={'w-full p-2 rounded bg-neutral-900 text-neutral-100'}
                     placeholder={'https://www.curseforge.com/minecraft/modpacks/...'}
@@ -82,7 +209,7 @@ const ModpackInstaller = () => {
                     onChange={(e) => setQuery(e.target.value)}
                 />
                 <div className={'mt-2'}>
-                    <Button disabled={busy || query.trim() === ''} onClick={lookup}>
+                    <Button disabled={busy || query.trim() === ''} onClick={() => lookup()}>
                         {busy ? 'Working...' : 'Look up'}
                     </Button>
                 </div>

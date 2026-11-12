@@ -51,6 +51,68 @@ class CurseForgeClient
     }
 
     /**
+     * Search Minecraft modpacks, most popular first.
+     *
+     * `hasServerPack` is true when any of the pack's latestFiles (a short list CurseForge returns with the
+     * search hit, not the full file history) carries a serverPackFileId. False means "none seen", not "none exist".
+     *
+     * @return array{results:array<int,array<string,mixed>>,index:int,pageSize:int,totalCount:int,hasMore:bool}
+     */
+    public function searchModpacks(string $filter, int $index, int $pageSize): array
+    {
+        $query = [
+            'gameId' => self::GAME_ID_MINECRAFT,
+            'classId' => self::CLASS_ID_MODPACKS,
+            'sortField' => 2, // Popularity
+            'sortOrder' => 'desc',
+            'index' => $index,
+            'pageSize' => $pageSize,
+        ];
+        $filter = trim($filter);
+        if ($filter !== '') {
+            $query['searchFilter'] = $filter;
+        }
+
+        $res = $this->get('/v1/mods/search', $query);
+        if (!$res->ok()) {
+            throw new CurseForgeException('Search failed (CurseForge returned ' . $res->status() . ').');
+        }
+
+        $results = [];
+        foreach ($res->json('data') ?? [] as $mod) {
+            $thumb = $mod['logo']['thumbnailUrl'] ?? null;
+            $hasServerPack = false;
+            foreach ($mod['latestFiles'] ?? [] as $file) {
+                if (!empty($file['serverPackFileId'])) {
+                    $hasServerPack = true;
+                    break;
+                }
+            }
+            $results[] = [
+                'id' => (int) $mod['id'],
+                'name' => (string) $mod['name'],
+                'slug' => (string) $mod['slug'],
+                'summary' => (string) ($mod['summary'] ?? ''),
+                'thumbnailUrl' => is_string($thumb) && str_starts_with($thumb, 'https://') ? $thumb : null,
+                'downloadCount' => (int) ($mod['downloadCount'] ?? 0),
+                'hasServerPack' => $hasServerPack,
+            ];
+        }
+
+        $page = $res->json('pagination') ?? [];
+        $total = (int) ($page['totalCount'] ?? count($results));
+
+        return [
+            'results' => $results,
+            'index' => $index,
+            'pageSize' => $pageSize,
+            'totalCount' => $total,
+            // CurseForge caps index + pageSize at 10,000.
+            'hasMore' => $index + count($results) < $total && $index + 2 * $pageSize <= 10000,
+        ];
+    }
+
+    /**
      * Accepts a numeric project ID, a CurseForge modpack URL, or a bare slug.
      *
      * @return array{id:int,name:string,slug:string}

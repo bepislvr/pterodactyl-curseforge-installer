@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Blueprint extension for Pterodactyl: install CurseForge modpack server packs onto a server.
-Read `README.md` first for scope. Keep scope small: server packs only, ID/URL/slug input.
+Read `README.md` first for scope. Keep scope small: server packs only; search/browse plus ID/URL/slug input.
 
 ## Your job
 
@@ -11,7 +11,7 @@ This scaffold was written from memory without a running panel. Make it actually 
 2. Get `blueprint -build` passing on a dev panel and fix whatever breaks.
 3. Test with 2-3 real packs that have server packs, plus one without a server pack, plus one
    with downloads disabled, and confirm each error path shows a clear message.
-4. Then work through the roadmap below.
+4. Then work through the roadmap below. (Search UI is done, see below; untested on a panel.)
 
 ## Verification record (phase 1, by reading sources; nothing was run)
 
@@ -67,6 +67,17 @@ Still unknown (needs a real panel)
 - Whether PHP/web server timeouts allow a multi-minute blocking install (`set_time_limit(900)` is set; nginx/FPM limits are the host's).
 - Test with 2-3 real packs, one without a server pack, one with downloads disabled.
 
+## Search endpoint (phase 3, not run on a panel)
+
+`POST .../servers/{server}/search` with `query` (optional, max 100), `index` (0-9950), `page_size` (1-50, default 20).
+Same `file.create` check and `{"error": ...}`/422 shape as the other endpoints. Backend `CurseForgeClient::searchModpacks()`
+calls `/v1/mods/search` with gameId 432, classId 4471, sortField 2 (Popularity) desc, `searchFilter`, `index`, `pageSize`, and
+returns only `id, name, slug, summary, thumbnailUrl (https only), downloadCount, hasServerPack` plus paging info.
+`hasServerPack` is derived from `latestFiles[].serverPackFileId`, which is only a short list, so false is not proof of absence.
+The React page debounces input (400 ms), ignores stale responses, shows loading/empty/error states, and a result click calls
+the existing `/resolve` flow with the project ID. Unknown: exact CurseForge pagination fields (`pagination.totalCount` is
+assumed from the Core API schema) and `hasServerPack` accuracy on real data.
+
 ## Conventions
 
 - Never expose the API key to the browser. All CurseForge calls stay server-side.
@@ -79,6 +90,5 @@ Still unknown (needs a real panel)
 1. Optional "backup before install" using Pterodactyl's backup service.
 2. Optional wipe of the server root (with confirmation and disk-space check).
 3. Poll Wings for pull status instead of a blocking `foreground` pull.
-4. Modpack search/browse UI using `/v1/mods/search` (gameId 432, classId 4471).
-5. Per-egg handling: accept EULA, set Java version, adjust startup command for Forge/NeoForge/Fabric.
-6. Cache CurseForge responses; respect rate limits.
+4. Per-egg handling: accept EULA, set Java version, adjust startup command for Forge/NeoForge/Fabric.
+5. Cache CurseForge (search hits CurseForge on every keystroke pause and on page load; caching and rate-limit handling matter more now) responses; respect rate limits.
