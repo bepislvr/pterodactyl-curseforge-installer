@@ -1,0 +1,35 @@
+info:
+  name: "CurseForge Modpack Installer"
+  identifier: "modpackinstaller"
+  description: "Install CurseForge modpack server packs onto a Minecraft server from the server page."
+  flags: ""
+  version: "0.1.0"
+  # TODO: set to the Blueprint release you develop against (see Blueprint docs)
+  target: "beta-2025-01"
+  author: "you@example.com"
+  icon: "icon.jpg"
+  website: ""
+
+admin:
+  view: "admin/view.blade.php"
+  controller: "admin/controller.php"
+  css: ""
+  wrapper: ""
+
+dashboard:
+  css: ""
+  wrapper: ""
+  components: "dashboard/components.yml"
+
+data:
+  directory: ""
+  public: ""
+  console: ""
+
+requests:
+  views: ""
+  app: "app"
+  routers:
+    application: ""
+    client: "routers/client.php"
+    web: ""

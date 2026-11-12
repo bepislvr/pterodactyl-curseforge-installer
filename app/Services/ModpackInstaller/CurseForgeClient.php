@@ -1,0 +1,130 @@
+<?php
+
+namespace Pterodactyl\Services\ModpackInstaller;
+
+use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Support\Facades\Http;
+use Pterodactyl\BlueprintFramework\Libraries\ExtensionLibrary\Client\BlueprintClientLibrary as BlueprintExtensionLibrary;
+
+class CurseForgeException extends \RuntimeException
+{
+}
+
+/**
+ * Thin wrapper around the CurseForge Core API (https://docs.curseforge.com).
+ * Scope: modpacks that ship a server pack only.
+ */
+class CurseForgeClient
+{
+    private const BASE_URL = 'https://api.curseforge.com';
+    private const GAME_ID_MINECRAFT = 432;
+    private const CLASS_ID_MODPACKS = 4471;
+
+    public function __construct(private BlueprintExtensionLibrary $blueprint)
+    {
+    }
+
+    private function http(): PendingRequest
+    {
+        $key = (string) $this->blueprint->dbGet('modpackinstaller', 'api_key');
+        if ($key === '') {
+            throw new CurseForgeException('No CurseForge API key is configured. Ask an administrator to set one.');
+        }
+
+        return Http::baseUrl(self::BASE_URL)
+            ->withHeaders(['x-api-key' => $key, 'Accept' => 'application/json'])
+            ->timeout(20);
+    }
+
+    /**
+     * Accepts a numeric project ID, a CurseForge modpack URL, or a bare slug.
+     *
+     * @return array{id:int,name:string,slug:string}
+     */
+    public function resolveModpack(string $reference): array
+    {
+        $reference = trim($reference);
+
+        if (preg_match('/^\d+$/', $reference)) {
+            $res = $this->http()->get('/v1/mods/' . $reference);
+            if (!$res->ok()) {
+                throw new CurseForgeException('Modpack not found (CurseForge returned ' . $res->status() . ').');
+            }
+            $mod = $res->json('data');
+        } else {
+            $slug = $reference;
+            if (preg_match('#curseforge\.com/minecraft/modpacks/([a-z0-9\-_]+)#i', $reference, $m)) {
+                $slug = $m[1];
+            }
+            $res = $this->http()->get('/v1/mods/search', [
+                'gameId' => self::GAME_ID_MINECRAFT,
+                'classId' => self::CLASS_ID_MODPACKS,
+                'slug' => strtolower($slug),
+            ]);
+            if (!$res->ok() || empty($res->json('data'))) {
+                throw new CurseForgeException('No modpack found for "' . $reference . '".');
+            }
+            $mod = $res->json('data')[0];
+        }
+
+        return ['id' => (int) $mod['id'], 'name' => $mod['name'], 'slug' => $mod['slug']];
+    }
+
+    /**
+     * Files of a modpack that have a server pack attached, newest first.
+     *
+     * @return array<int,array{fileId:int,serverPackFileId:int,displayName:string,gameVersions:array,date:string}>
+     */
+    public function serverPackFiles(int $modId): array
+    {
+        $res = $this->http()->get("/v1/mods/{$modId}/files", ['pageSize' => 50]);
+        if (!$res->ok()) {
+            throw new CurseForgeException('Could not list files (CurseForge returned ' . $res->status() . ').');
+        }
+
+        $out = [];
+        foreach ($res->json('data') as $file) {
+            if (!empty($file['serverPackFileId'])) {
+                $out[] = [
+                    'fileId' => (int) $file['id'],
+                    'serverPackFileId' => (int) $file['serverPackFileId'],
+                    'displayName' => $file['displayName'],
+                    'gameVersions' => $file['gameVersions'] ?? [],
+                    'date' => $file['fileDate'] ?? '',
+                ];
+            }
+        }
+        usort($out, fn ($a, $b) => strcmp($b['date'], $a['date']));
+
+        return $out;
+    }
+
+    /**
+     * Download info for a server pack file.
+     *
+     * @return array{url:string,fileName:string}
+     */
+    public function serverPackDownload(int $modId, int $serverPackFileId): array
+    {
+        $res = $this->http()->get("/v1/mods/{$modId}/files/{$serverPackFileId}");
+        if (!$res->ok()) {
+            throw new CurseForgeException('Server pack file not found (CurseForge returned ' . $res->status() . ').');
+        }
+        $file = $res->json('data');
+        $url = $file['downloadUrl'] ?? null;
+
+        if (!$url) {
+            // Some files hide downloadUrl; try the dedicated endpoint before giving up.
+            $dl = $this->http()->get("/v1/mods/{$modId}/files/{$serverPackFileId}/download-url");
+            $url = $dl->ok() ? $dl->json('data') : null;
+        }
+
+        if (!$url) {
+            throw new CurseForgeException(
+                'The author has disabled third-party downloads for this server pack. Download it manually from CurseForge.'
+            );
+        }
+
+        return ['url' => $url, 'fileName' => $file['fileName']];
+    }
+}
