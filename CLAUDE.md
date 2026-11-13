@@ -163,12 +163,35 @@ Status of game ID 432 / class ID 4471: **checked by code, not yet confirmed agai
 - Assumed response shapes (from the Core API schema, not seen live): Game `{id,name,slug}`, Category `{id,gameId,name,slug,isClass}`.
   The game passes on slug `minecraft` or name `Minecraft`; the class on slug `modpacks` or name `Modpacks`.
 - Tests: `tests/` is a dev-only harness (Orchestra Testbench 9 / Laravel 11, PHPUnit 11; stubs for the Blueprint libraries
-  and panel base classes in `tests/stubs`). Not part of the extension; Blueprint ignores it.
+  and panel base classes in `tests/stubs`). Not part of the extension: install/`-build` do not install it, and exports exclude it
+  (see "Exports exclude tests/").
   `composer install -d tests && tests/vendor/bin/phpunit -c tests/phpunit.xml`. `Http::preventStrayRequests()` is on, so no test
   reaches the network. Covers: correct response, wrong class name, class missing (with and without a Modpacks class elsewhere),
   not-a-class, wrong game, 401/403 on either call, network failure, 503, non-JSON, odd field types, stored vs given key, no key,
   and the admin save (key stored in every case, success/warning rendered, HTML escaped, key not echoed, blank save sends nothing).
 - To confirm for real: save a real key on the admin page and read the alert. Then update the status above.
+
+## Exports exclude tests/ (2026-11-13, verified on the test panel)
+
+`blueprint -export` copies the whole dev folder (`cp -r dev/* tmp/`) and zips it, excluding only `.dist`, `.git`, `.gitkeep`.
+Without help, `tests/` (with its 8,760-line `composer.lock`, and `tests/vendor` if installed) would ship in the `.blueprint` package.
+
+- `conf.yml` `data.directory: "private"` holds only `private/export.sh`. Blueprint runs it only from `blueprint -export`, after
+  the copy and before the zip, with cwd and `BLUEPRINT_EXPORT_DIRECTORY` = `<panel>/.blueprint/tmp`. It deletes `tests/` there and nothing else.
+- Flag `developerEscalateExportScript` is needed: Blueprint runs as root, so the copy is root-owned and the default
+  (www-data) hook cannot delete it (observed: the export then still contained `tests/`). The flag only affects export.
+- Safety: the hook deletes nothing unless the realpath of the export directory equals `$PTERODACTYL_DIRECTORY/.blueprint/tmp`,
+  equals the cwd, is not `.blueprint/dev`, has no `.git`, holds this extension's `conf.yml`, and `EXTENSION_IDENTIFIER` is
+  `modpackinstaller`. A symlinked `tests` is unlinked, not followed. Checked with a fake panel tree: the dev folder,
+  the git checkout, unset env, wrong identifier, `.git`, `tmp` symlinked to `dev`: all refused, nothing deleted.
+- Blueprint zips even if the hook fails, so a refusal is only a loud message. After exporting, check:
+  `unzip -l modpackinstaller.blueprint | grep tests/` must print nothing.
+- Verified: real export lists only `admin/`, `app/`, `dashboard/`, `routers/`, `private/export.sh`, `conf.yml`, `README.md`,
+  `CLAUDE.md` (no `tests/`, `tests/vendor`, `composer.lock`); `tests/` unchanged (sha256) in the dev folder and in git afterwards.
+  `-build` and `-install` of the exported package never ran the hook; install copies `export.sh` into
+  `.blueprint/extensions/modpackinstaller/private/` but no Blueprint command other than export runs it.
+- Blueprint quirk (not ours): export leaves an empty `.blueprint/tmp`, and the next `-build` then copies the dev folder into
+  `tmp/dev/` and fails with "Extension configuration file not found". That failure removes `tmp`; the build after it works.
 
 ## Conventions
 

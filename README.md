@@ -26,7 +26,8 @@ CurseForge API key**: Wings download and extraction were tested with locally ser
 | `app/WingsPackInstaller.php` | Has Wings pull the archive into the server root, extract it, then delete the archive |
 | `routers/client.php` | Server-scoped routes |
 | `dashboard/` | React page and `Components.yml` registration (this directory is `dashboard.components`) |
-| `tests/` | Dev-only PHPUnit harness (`Http::fake()`, no network). Not installed by Blueprint. |
+| `tests/` | Dev-only PHPUnit harness (`Http::fake()`, no network). Not installed by Blueprint, and removed from `blueprint -export` packages by `private/export.sh`. |
+| `private/export.sh` | Export hook (`data.directory`): deletes `tests/` from Blueprint's temporary export copy only |
 
 ## Install (dev)
 
