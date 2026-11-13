@@ -8,10 +8,10 @@ Read `README.md` first for scope. Keep scope small: server packs only; search/br
 This scaffold was written from memory without a running panel. Make it actually work.
 
 1. (Done by reading, see Verification record.)
-2. Get `blueprint -build` passing on a dev panel and fix whatever breaks.
-3. Test with 2-3 real packs that have server packs, plus one without a server pack, plus one
+2. (Done, see "Run record (phase 2)".) `blueprint -build` passes on a real panel.
+3. Needs Wings + a real CurseForge API key. Test with 2-3 real packs that have server packs, plus one without a server pack, plus one
    with downloads disabled, and confirm each error path shows a clear message.
-4. Then work through the roadmap below. (Search UI is done, see below; untested on a panel.)
+4. Then work through the roadmap below. (Search UI is done and runs on the panel; not yet tried with real CurseForge data.)
 
 ## Verification record (phase 1, by reading sources; nothing was run)
 
@@ -39,8 +39,8 @@ Corrected
 - `conf.yml`: `target` is now `beta-2026-08`. `icon: "icon.jpg"` pointed at a missing file (fatal at install), now empty.
   `dashboard.components` must be a directory, not a file. `requests.app` is symlinked to
   `app/BlueprintFramework/Extensions/modpackinstaller`, it does NOT merge into the panel `app/`.
-- PHP classes moved to flat files under `app/` using the `{appcontext}` namespace placeholder
-  (`Pterodactyl\BlueprintFramework\Extensions\modpackinstaller`). The old `Pterodactyl\Services\...` and
+- PHP classes moved to flat files under `app/` in namespace `Pterodactyl\BlueprintFramework\Extensions\modpackinstaller`
+  (written literally; the `{appcontext}` placeholder is broken, see phase 2). The old `Pterodactyl\Services\...` and
   `Pterodactyl\Http\Controllers\...` namespaces would never have been installed. `CurseForgeException` split to its own file for PSR-4.
 - `dashboard/components.yml` is now `dashboard/Components.yml` (case matters) with the real schema:
   `Navigation.Routes[]` with `Name`, `Path`, `Type: server`, `Component`, `Permission`, `AdminOnly`. The old
@@ -55,19 +55,89 @@ Corrected
   handling for CurseForge calls, skip of `isAvailable: false` files.
 - Admin view no longer echoes the stored API key into the HTML; blank field keeps the current key.
 
-Still unknown (needs a real panel)
-- `Permission: "'file.create'"` in Components.yml: install.sh pastes it raw into TypeScript. By reading the bash YAML
-  parser the inner quotes should survive, but it was not executed. If the build fails in routes.ts, drop `Permission`.
-- Whether PSR-4 resolves classes through the `app/BlueprintFramework/Extensions` symlink on the panel (no optimized/authoritative classmap).
-- CurseForge: game ID 432 and class ID 4471 are not stated in the docs; only seen in third-party usage
-  (itzg/docker-minecraft-server issue 3591). `downloadUrl` is documented as a plain string, null when the author disables
+Still unknown (needs a real CurseForge API key)
+- CurseForge game ID 432 and class ID 4471: **checked by code, not yet confirmed against the live API.** They are not
+  stated in the docs (only seen in third-party usage, itzg/docker-minecraft-server issue 3591). See "CurseForge ID check".
+- `downloadUrl` is documented as a plain string; null when the author disables
   distribution is community knowledge, handled defensively.
-- The CDN allowlist (`forgecdn.net`, `curseforge.com`): the docs do not name download hosts. `edge.forgecdn.net` and
-  `mediafilez.forgecdn.net` are expected and match; confirm with a real pack.
-- Whether PHP/web server timeouts allow a multi-minute blocking install (`set_time_limit(900)` is set; nginx/FPM limits are the host's).
+- Which host CurseForge's `downloadUrl` uses, and that the redirect chain ends in a 200 for a real file
+  (only a made-up path was tried: edge.forgecdn.net 302 -> mediafilez.forgecdn.net 403).
+- Response shapes on real data (search, files, pagination), and the full install of a real pack.
 - Test with 2-3 real packs, one without a server pack, one with downloads disabled.
 
-## Search endpoint (phase 3, not run on a panel)
+## Run record (phase 2, 2026-11-12, executed on a test VM)
+
+Setup: Ubuntu 26.04, Pterodactyl panel v1.15.2 per the official docs (nginx, plain http, MariaDB, Redis, pteroq), but
+PHP 8.5 from Ubuntu because the ondrej PPA has no 26.04 build (composer constraint `^8.2 || ^8.3` accepts it).
+reCAPTCHA disabled in `.env` for scripted logins. Blueprint beta-2026-08 per its docs, developer mode on. No Wings, no Docker.
+
+Fixed by running it
+- `{appcontext}` is broken on beta-2026-08: install.sh does `sed "s~{appcontext}~Pterodactyl\BlueprintFramework\Extensions\$identifier~g"`
+  and GNU sed treats `\B`, `\E`, `\m` in the replacement as escapes, giving `PterodactylBlueprintFrameworkxtensionsmodpackinstaller`
+  (route:list failed with class not found). The namespace is now written literally in `app/*.php` and `routers/client.php`.
+- The panel's axios instance (`@/api/http`) has a 20s timeout, so the browser gave up on `/install` long before Wings finished.
+  The install call now passes its own 15 minute timeout.
+- UI error text used only `response.data.error`, so 403s and validation errors (`{"errors":[{detail}]}`) showed
+  "Request failed with status code 422". Now uses the panel's `httpErrorToHuman`, which handles both.
+- Clearer messages for a non-https download URL and for Wings extraction errors (no more "(request id: )").
+
+Verified by running
+- `blueprint -build` succeeds (only warning: no icon); webpack compiles; `tsc --noEmit` reports no errors in the extension
+  (two pre-existing i18n type errors in the stock panel).
+- `Permission: "'file.create'"` lands in routes.ts as `permission: 'file.create'`; nav entry shows for the owner and is hidden for
+  a subuser without `file.create`, whose direct URL gets the panel's "Access Denied" page.
+- `route:list`: admin GET/PATCH and client POST search/resolve/install, client routes with middleware `blueprint/api`,
+  `RequireTwoFactorAuthentication`, `blueprint/client-api`, `throttle:api.client`, `AuthenticateServerAccess`.
+- PSR-4 autoloads the classes through the `app/BlueprintFramework/Extensions/modpackinstaller` symlink even with
+  `composer install --optimize-autoloader` (classes are not in the classmap; PSR-4 fallback works). Container resolves all classes.
+- Admin page renders; saving stores `modpackinstaller::api_key`; the key is not echoed; a blank save keeps it.
+- Client API through the full HTTP stack: a bad key gives 422 `{"error":"CurseForge rejected the API key (HTTP 403)..."}`
+  (real call to api.curseforge.com), a subuser without `file.create` gets 403, unknown server 404, bad input 422 validation.
+- Server page in headless Chromium: renders, shows backend errors, and (with the three endpoints mocked in the browser)
+  list, server pack badge, load more, debounce, empty state, result click to resolve, version select, install busy state,
+  success message, and "no server pack" / "downloads disabled" errors.
+- Install controller against a fake Wings on the node address (CurseForge lookup stubbed in a test script): posts
+  `/api/servers/{uuid}/files/pull` with `url, root "/", file_name, use_header false, foreground true` and the node's bearer token,
+  then `/files/decompress` with `root, file`; `fileName` path traversal is stripped by `basename`; non-https and lookalike
+  hosts (`forgecdn.net.evil.com`) are refused; Wings 400s and an unreachable node become 422 `{"error": ...}`.
+
+## Run record (phase 2b, 2026-11-12: Wings, no CurseForge key)
+
+Setup: Docker 29.9.3 (get.docker.com) and Wings v1.13.5 per the official docs on the same VM; location, node
+(192.168.178.133, http, :8080) and allocation :25565 created in the admin UI; server "Forge Modpack" from the stock
+Forge egg (MC 1.20.1, Java 17 image, egg install completed). No CurseForge API key: nothing was fetched from
+curseforge.com except the keyless/fake-key error checks against api.curseforge.com.
+
+Fixed by running it
+- Wings never follows redirects (downloader `CheckRedirect` returns `ErrUseLastResponse`) and fails a non-200 with a
+  generic 500. `edge.forgecdn.net` answers with `302 -> mediafilez.forgecdn.net` (seen with a keyless HEAD on a made-up
+  path). `CurseForgeClient::resolveCdnUrl()` now follows up to 3 redirects on the panel with HEAD; every hop and the final
+  URL must pass `isAllowedDownloadUrl()` (https + forgecdn.net/curseforge.com, unchanged), and a non-2xx end becomes a clear
+  error. Spaces are sent as `%20`. Checked with `Http::fake()` (off-CDN redirect, http downgrade, relative Location, loop,
+  missing Location: all refused or resolved correctly; no request to the off-CDN host).
+- The downloaded archive stayed in the server root after extraction (300 MB on the test pack). Now deleted after a
+  successful extraction, kept on failure.
+- After the 600 s pull timeout the user saw "Download failed", but Wings keeps downloading and leaves the archive
+  unextracted (observed: finished at 683 s). cURL errno 28 now gives a message saying so; errno 7 (node unreachable) keeps
+  "Download failed".
+- nginx 504 at 300 s showed "Request failed with status code 504" although the install finished (observed at 410 s).
+  The UI now says the install may still be running.
+- Wings calls moved to `WingsPackInstaller` (no behaviour change) so they can be exercised without the controller.
+
+Verified by running
+- Wings blocks private destinations (`remote_download_allowlist` empty): pull of http://192.168.178.133:8000/... ->
+  "The URL or IP address provided could not be resolved to a valid destination." No request reached the test server.
+- With the VM IP temporarily allowlisted in Wings (reverted afterwards), `WingsPackInstaller::pullAndExtract()` against
+  `python3 -m http.server`: small pack and a name with spaces (raw and %20) download and extract into the server root,
+  owned by `pterodactyl`; a 404 gives "Download failed: An unexpected error was encountered..." (Wings 500).
+- ~300 MB zip over LAN: pull 0.2 s, extract ~0.2 s, 0.4 s total, no timeouts.
+- Throttled ~300 MB: at 750 KB/s through nginx + PHP-FPM, nginx returned 504 at 300 s, PHP finished the install at
+  409.8 s; at 450 KB/s, Guzzle's pull timeout fired at 600.0 s.
+- Endpoints with no key and a fake key (CurseForge returned 403) all give 422 `{"error": ...}`; a subuser without
+  `file.create` gets 403 on all three endpoints; nav entry hidden for that subuser.
+- The panel's client API rate limit (256/min per user) returned 429 when two browser suites ran back to back.
+
+## Search endpoint (phase 3; endpoint and UI run on the panel, not against real CurseForge data)
 
 `POST .../servers/{server}/search` with `query` (optional, max 100), `index` (0-9950), `page_size` (1-50, default 20).
 Same `file.create` check and `{"error": ...}`/422 shape as the other endpoints. Backend `CurseForgeClient::searchModpacks()`
@@ -77,6 +147,51 @@ returns only `id, name, slug, summary, thumbnailUrl (https only), downloadCount,
 The React page debounces input (400 ms), ignores stale responses, shows loading/empty/error states, and a result click calls
 the existing `/resolve` flow with the project ID. Unknown: exact CurseForge pagination fields (`pagination.totalCount` is
 assumed from the Core API schema) and `hasServerPack` accuracy on real data.
+
+## CurseForge ID check (2026-11-13; tested with Http::fake() only)
+
+Status of game ID 432 / class ID 4471: **checked by code, not yet confirmed against the live API** (no real key was available).
+
+- Defined once, as `CurseForgeClient::GAME_ID_MINECRAFT` and `CurseForgeClient::CLASS_ID_MODPACKS`. Nothing else may hardcode them.
+- `CurseForgeClient::checkIds(?string $apiKey)` calls `GET /v1/games/432` and `GET /v1/categories?gameId=432&classesOnly=true`
+  and returns an `IdCheckResult` (`status` + `message`), never throws. Statuses: `ok`; `mismatch` (game is not Minecraft,
+  class 4471 missing, or not named Modpacks / not `isClass` / other gameId; names a `modpacks`-slug class under another ID
+  if one exists); `unexpected` (no data); `auth` (401/403); `unreachable` (connection error/timeout, 10 s / 5 s connect);
+  `http_error` (other non-200); `no_key`. Messages quote what CurseForge returned, never the key.
+- Runs when an admin saves a non-blank key, after the key is stored (never blocks saving). The result is flashed to the
+  session and shown on the admin page as a success or warning alert (escaped). A blank save skips it.
+- Assumed response shapes (from the Core API schema, not seen live): Game `{id,name,slug}`, Category `{id,gameId,name,slug,isClass}`.
+  The game passes on slug `minecraft` or name `Minecraft`; the class on slug `modpacks` or name `Modpacks`.
+- Tests: `tests/` is a dev-only harness (Orchestra Testbench 9 / Laravel 11, PHPUnit 11; stubs for the Blueprint libraries
+  and panel base classes in `tests/stubs`). Not part of the extension: install/`-build` do not install it, and exports exclude it
+  (see "Exports exclude tests/").
+  `composer install -d tests && tests/vendor/bin/phpunit -c tests/phpunit.xml`. `Http::preventStrayRequests()` is on, so no test
+  reaches the network. Covers: correct response, wrong class name, class missing (with and without a Modpacks class elsewhere),
+  not-a-class, wrong game, 401/403 on either call, network failure, 503, non-JSON, odd field types, stored vs given key, no key,
+  and the admin save (key stored in every case, success/warning rendered, HTML escaped, key not echoed, blank save sends nothing).
+- To confirm for real: save a real key on the admin page and read the alert. Then update the status above.
+
+## Exports exclude tests/ (2026-11-13, verified on the test panel)
+
+`blueprint -export` copies the whole dev folder (`cp -r dev/* tmp/`) and zips it, excluding only `.dist`, `.git`, `.gitkeep`.
+Without help, `tests/` (with its 8,760-line `composer.lock`, and `tests/vendor` if installed) would ship in the `.blueprint` package.
+
+- `conf.yml` `data.directory: "private"` holds only `private/export.sh`. Blueprint runs it only from `blueprint -export`, after
+  the copy and before the zip, with cwd and `BLUEPRINT_EXPORT_DIRECTORY` = `<panel>/.blueprint/tmp`. It deletes `tests/` there and nothing else.
+- Flag `developerEscalateExportScript` is needed: Blueprint runs as root, so the copy is root-owned and the default
+  (www-data) hook cannot delete it (observed: the export then still contained `tests/`). The flag only affects export.
+- Safety: the hook deletes nothing unless the realpath of the export directory equals `$PTERODACTYL_DIRECTORY/.blueprint/tmp`,
+  equals the cwd, is not `.blueprint/dev`, has no `.git`, holds this extension's `conf.yml`, and `EXTENSION_IDENTIFIER` is
+  `modpackinstaller`. A symlinked `tests` is unlinked, not followed. Checked with a fake panel tree: the dev folder,
+  the git checkout, unset env, wrong identifier, `.git`, `tmp` symlinked to `dev`: all refused, nothing deleted.
+- Blueprint zips even if the hook fails, so a refusal is only a loud message. After exporting, check:
+  `unzip -l modpackinstaller.blueprint | grep tests/` must print nothing.
+- Verified: real export lists only `admin/`, `app/`, `dashboard/`, `routers/`, `private/export.sh`, `conf.yml`, `README.md`,
+  `CLAUDE.md` (no `tests/`, `tests/vendor`, `composer.lock`); `tests/` unchanged (sha256) in the dev folder and in git afterwards.
+  `-build` and `-install` of the exported package never ran the hook; install copies `export.sh` into
+  `.blueprint/extensions/modpackinstaller/private/` but no Blueprint command other than export runs it.
+- Blueprint quirk (not ours): export leaves an empty `.blueprint/tmp`, and the next `-build` then copies the dev folder into
+  `tmp/dev/` and fails with "Extension configuration file not found". That failure removes `tmp`; the build after it works.
 
 ## Conventions
 

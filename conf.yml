@@ -2,7 +2,9 @@ info:
   name: "CurseForge Modpack Installer"
   identifier: "modpackinstaller"
   description: "Install CurseForge modpack server packs onto a Minecraft server from the server page."
-  flags: ""
+  # Runs private/export.sh as root during `blueprint -export` only: Blueprint copies the dev folder as root, so the
+  # default www-data hook cannot delete tests/ from the copy. Install and -build never run export.sh.
+  flags: "developerEscalateExportScript"
   version: "0.1.0"
   # Latest Blueprint release at time of writing (supports Pterodactyl 1.15.x).
   # A mismatch only produces a warning, but keep it in sync with the panel you test on.
@@ -25,14 +27,16 @@ dashboard:
   components: "dashboard"
 
 data:
-  directory: ""
+  # Holds only export.sh, which keeps the dev-only tests/ out of `blueprint -export` packages (see CLAUDE.md).
+  directory: "private"
   public: ""
   console: ""
 
 requests:
   views: ""
   # Directory is symlinked to app/BlueprintFramework/Extensions/modpackinstaller.
-  # PHP files in it use the namespace placeholder {appcontext}.
+  # PHP files in it use the literal namespace Pterodactyl\BlueprintFramework\Extensions\modpackinstaller.
+  # Do not use the {appcontext} placeholder: on beta-2026-08 GNU sed eats its backslashes (see CLAUDE.md).
   app: "app"
   routers:
     application: ""

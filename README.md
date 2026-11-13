@@ -4,7 +4,8 @@ Adds a "Modpack Installer" page to each server in Pterodactyl. A user pastes a C
 modpack URL, slug or project ID (or searches and picks from the popular list), picks a version, and the extension downloads the modpack's
 official **server pack** straight onto the server (via Wings) and extracts it.
 
-**Status: v0.1 scaffold. Not yet run against a real panel.** See `CLAUDE.md` for what still needs verifying.
+**Status: v0.1. Builds and runs on Pterodactyl 1.15.2 + Blueprint beta-2026-08 + Wings 1.13.5. Not yet tested with a real
+CurseForge API key**: Wings download and extraction were tested with locally served sample zips only. See `CLAUDE.md` ("Run record").
 
 ## Scope (deliberately small)
 
@@ -19,16 +20,22 @@ official **server pack** straight onto the server (via Wings) and extracts it.
 |---|---|
 | `conf.yml` | Blueprint extension manifest |
 | `admin/` | Admin page for the CurseForge API key |
-| `app/CurseForgeClient.php` | CurseForge API wrapper (namespace `{appcontext}`, symlinked by Blueprint) |
+| `app/CurseForgeClient.php` | CurseForge API wrapper (namespace `Pterodactyl\BlueprintFramework\Extensions\modpackinstaller`, symlinked by Blueprint) |
 | `app/ModpackInstallerController.php` | `search`, `resolve` and `install` endpoints |
+| `app/IdCheckResult.php` | Result of the game/class ID check run when an admin saves an API key |
+| `app/WingsPackInstaller.php` | Has Wings pull the archive into the server root, extract it, then delete the archive |
 | `routers/client.php` | Server-scoped routes |
 | `dashboard/` | React page and `Components.yml` registration (this directory is `dashboard.components`) |
+| `tests/` | Dev-only PHPUnit harness (`Http::fake()`, no network). Not installed by Blueprint, and removed from `blueprint -export` packages by `private/export.sh`. |
+| `private/export.sh` | Export hook (`data.directory`): deletes `tests/` from Blueprint's temporary export copy only |
 
 ## Install (dev)
 
 1. Install Blueprint on your panel and enable developer mode.
 2. Copy this repo into the panel's Blueprint dev folder (`.blueprint/dev`), then run `blueprint -build`.
-3. Open Admin > Extensions > CurseForge Modpack Installer and enter your CurseForge API key.
+3. Open Admin > Extensions > CurseForge Modpack Installer and enter your CurseForge API key. Saving checks the
+   hardcoded game ID (432, Minecraft) and class ID (4471, Modpacks) against CurseForge and shows the result; a warning
+   does not stop the key from being saved.
 4. Open a server and use the "Modpack Installer" page.
 
 ## API (all under `/api/client/extensions/modpackinstaller/servers/{server}`)
@@ -44,10 +51,11 @@ All endpoints are POST, require the `file.create` server permission, and return 
 
 ## Verify on a dev panel
 
-`blueprint -build` has **not been run** against this code. The sandbox it was written in could not reach Packagist,
-had no running Docker daemon and no MySQL/MariaDB, so no panel could be stood up. Everything below was only checked by
-reading the Blueprint, Pterodactyl 1.15.2, Wings and CurseForge sources and docs (see `CLAUDE.md`, "Verification record"),
-plus `php -l` on the PHP files (with `{appcontext}` substituted) and a syntax-only TypeScript transpile of the React page.
+`blueprint -build` passes and the admin page, routes, autoloading and server page were checked on a real panel
+(see `CLAUDE.md`, "Run record"). Not yet done: anything that needs a real CurseForge API key.
+
+Note: don't use Blueprint's `{appcontext}` placeholder in this extension. On beta-2026-08 its sed replacement drops the
+backslashes, so the namespace is written out literally.
 
 Suggested steps (Blueprint Docker dev setup: https://blueprint.zip/guides/dev/docker):
 
@@ -62,21 +70,27 @@ php artisan route:list | grep modpackinstaller                       # expect se
 ```
 
 Then check:
-- Build output: no fatal about `Permission` / `routes.ts` (if there is, remove `Permission` from `dashboard/Components.yml`).
-- Classes autoload from `app/BlueprintFramework/Extensions/modpackinstaller` (no "class not found").
 - Search loads, debounces, paginates; clicking a result fills the version list.
 - Install 2-3 packs with server packs, one without a server pack, one with third-party downloads disabled; each error is a clear message.
 - A large pack finishes within your web server / PHP-FPM timeouts (the install call blocks).
 - A subuser without `file.create` gets 403 and does not see the nav entry.
 
-Only verified by reading docs, never executed: conf.yml field names, `{appcontext}` substitution and symlink, route
-mounting and prefix, `Components.yml` to `routes.ts` wiring (including the quoted `Permission`), admin controller
-discovery and PATCH handling, Wings pull/decompress behaviour, CurseForge response shapes (game 432, class 4471,
-nullable `downloadUrl`, forgecdn host names).
+Only verified by reading docs, never executed: Wings pull/decompress behaviour against real files, CurseForge response
+shapes on real data (game 432, class 4471, nullable `downloadUrl`, forgecdn host names, `pagination.totalCount`).
 
 ## Known limits
 
 - Authors can disable third-party downloads; those packs return an error with a manual-download hint.
-- The install call blocks until Wings finishes the download, so very large packs may time out.
+- The install call blocks until Wings finishes the download and extraction. Measured on a test VM:
+  - nginx (`fastcgi_read_timeout 300` in the official config) returns 504 at 300 s. PHP keeps going and the install
+    finishes; the UI says the install may still be running and to check the Files tab.
+  - The panel stops waiting for the download after 600 s. Wings keeps downloading and leaves the archive in the server
+    root unextracted; the UI says so. Extract it from the Files tab.
+  - Raising `fastcgi_read_timeout` on the panel's nginx avoids the 504 for slow nodes.
+- Downloads go through Wings, which refuses redirects and private/internal addresses. CurseForge's `edge.forgecdn.net`
+  redirects, so the panel resolves CDN redirects first (every hop must be https on forgecdn.net/curseforge.com).
+- Search, resolve and install count against the panel's per-user client API rate limit (256 requests/minute by default),
+  shared with the rest of the panel UI.
 - Extraction can overwrite existing files. The UI warns, but there is no automatic backup yet.
+- The downloaded archive is deleted after a successful extraction and kept if extraction fails.
 - Check CurseForge's API terms to confirm your use case is allowed.

@@ -3,3 +3,4 @@ vendor/
 *.blueprint
 .env
 .DS_Store
+.phpunit.result.cache

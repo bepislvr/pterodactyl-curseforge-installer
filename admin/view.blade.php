@@ -1,3 +1,15 @@
+@php($idCheck = session('modpackinstaller_id_check'))
+@if (is_array($idCheck))
+  <div class="alert {{ $idCheck['ok'] ? 'alert-success' : 'alert-warning' }}">
+    <strong>API key saved.</strong>
+    @if ($idCheck['ok'])
+      CurseForge confirmed the game and class IDs this extension uses: {{ $idCheck['message'] }}
+    @else
+      Warning: could not confirm the game and class IDs this extension uses
+      (Minecraft = {{ $gameId }}, Modpacks = {{ $classId }}). {{ $idCheck['message'] }}
+    @endif
+  </div>
+@endif
 <form action="{{ $root }}" method="POST">
   <div class="box box-primary">
     <div class="box-header with-border">

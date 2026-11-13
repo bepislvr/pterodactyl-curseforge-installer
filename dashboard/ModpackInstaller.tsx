@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import http from '@/api/http';
+import http, { httpErrorToHuman } from '@/api/http';
 import { ServerContext } from '@/state/server';
 import ServerContentBlock from '@/components/elements/ServerContentBlock';
 import { Button } from '@/components/elements/button/index';
@@ -40,7 +40,13 @@ const DEBOUNCE_MS = 400;
 
 const base = (uuid: string) => `/api/client/extensions/modpackinstaller/servers/${uuid}`;
 
-const errorMessage = (e: any): string => e?.response?.data?.error || e?.message || 'Something went wrong.';
+// The extension returns {"error": "..."}; panel middleware (403, validation, throttling) returns {"errors": [{detail}]}.
+// httpErrorToHuman handles both.
+const errorMessage = (e: any): string => httpErrorToHuman(e) || 'Something went wrong.';
+
+// The shared axios instance times out after 20s, but /install blocks until Wings has downloaded and extracted the
+// pack. Match the backend's set_time_limit(900). The web server's own timeout (nginx fastcgi_read_timeout) still applies.
+const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 
 const ModpackInstaller = () => {
     const uuid = ServerContext.useStoreState((state) => state.server.data!.uuid);
@@ -127,13 +133,23 @@ const ModpackInstaller = () => {
         setBusy(true);
         setError(null);
         try {
-            const { data } = await http.post(`${base(uuid)}/install`, {
-                mod_id: resolved.modpack.id,
-                server_pack_file_id: selected,
-            });
+            const { data } = await http.post(
+                `${base(uuid)}/install`,
+                { mod_id: resolved.modpack.id, server_pack_file_id: selected },
+                { timeout: INSTALL_TIMEOUT_MS }
+            );
             setDone(`Installed ${data.file}. Check the Files tab, then restart or reinstall the server as your egg requires.`);
-        } catch (e) {
-            setError(errorMessage(e));
+        } catch (e: any) {
+            const status = e?.response?.status;
+            if (status === 502 || status === 504 || e?.code === 'ECONNABORTED') {
+                // The web server (or the browser) stopped waiting, but the panel keeps running the install on the node.
+                setError(
+                    'The request timed out before the install finished. It may still be running on the node: ' +
+                        'check the Files tab in a few minutes before trying again.'
+                );
+            } else {
+                setError(errorMessage(e));
+            }
         } finally {
             setBusy(false);
         }
