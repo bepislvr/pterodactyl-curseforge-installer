@@ -5,6 +5,7 @@ namespace Pterodactyl\Http\Controllers\Admin\Extensions\modpackinstaller;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\View\Factory as ViewFactory;
 use Illuminate\View\View;
+use Pterodactyl\BlueprintFramework\Extensions\modpackinstaller\CurseForgeClient;
 use Pterodactyl\BlueprintFramework\Libraries\ExtensionLibrary\Admin\BlueprintAdminLibrary as BlueprintExtensionLibrary;
 use Pterodactyl\Http\Controllers\Controller;
 use Pterodactyl\Http\Requests\Admin\AdminFormRequest;
@@ -25,18 +26,24 @@ class modpackinstallerExtensionController extends Controller
             'root' => '/admin/extensions/modpackinstaller',
             'blueprint' => $this->blueprint,
             'hasKey' => (string) $this->blueprint->dbGet('modpackinstaller', 'api_key') !== '',
+            'gameId' => CurseForgeClient::GAME_ID_MINECRAFT,
+            'classId' => CurseForgeClient::CLASS_ID_MODPACKS,
         ]);
     }
 
-    public function update(modpackinstallerExtensionRequest $request): RedirectResponse
+    public function update(modpackinstallerExtensionRequest $request, CurseForgeClient $curseForge): RedirectResponse
     {
         // The stored key is never sent back to the browser, so a blank field means "keep the current key".
         $key = trim((string) $request->input('api_key', ''));
-        if ($key !== '') {
-            $this->blueprint->dbSet('modpackinstaller', 'api_key', $key);
+        $redirect = redirect()->route('admin.extensions.modpackinstaller.index');
+        if ($key === '') {
+            return $redirect;
         }
 
-        return redirect()->route('admin.extensions.modpackinstaller.index');
+        // Save first; the ID check only informs the admin and never blocks saving.
+        $this->blueprint->dbSet('modpackinstaller', 'api_key', $key);
+
+        return $redirect->with('modpackinstaller_id_check', $curseForge->checkIds($key)->toArray());
     }
 }
 

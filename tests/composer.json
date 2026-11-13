@@ -1,0 +1,19 @@
+{
+    "name": "modpackinstaller/tests",
+    "description": "Dev-only test harness for the extension. Not installed by Blueprint.",
+    "type": "project",
+    "license": "proprietary",
+    "require-dev": {
+        "orchestra/testbench": "^9.0",
+        "phpunit/phpunit": "^11.0"
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Pterodactyl\\BlueprintFramework\\Extensions\\modpackinstaller\\": "../app/",
+            "Pterodactyl\\": "stubs/Pterodactyl/",
+            "ModpackInstaller\\Tests\\": "Unit/"
+        },
+        "files": ["../admin/controller.php"]
+    },
+    "config": { "sort-packages": true }
+}

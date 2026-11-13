@@ -15,17 +15,24 @@ use Pterodactyl\BlueprintFramework\Libraries\ExtensionLibrary\Client\BlueprintCl
 class CurseForgeClient
 {
     private const BASE_URL = 'https://api.curseforge.com';
-    private const GAME_ID_MINECRAFT = 432;
-    private const CLASS_ID_MODPACKS = 4471;
+
+    /**
+     * The only place these IDs are defined. They are not stated in the CurseForge docs (seen in third-party
+     * usage only); checkIds() verifies them against the live API when an admin saves a key.
+     */
+    public const GAME_ID_MINECRAFT = 432;
+    public const CLASS_ID_MODPACKS = 4471;
+    public const GAME_SLUG_MINECRAFT = 'minecraft';
+    public const CLASS_SLUG_MODPACKS = 'modpacks';
     private const MAX_CDN_REDIRECTS = 3;
 
     public function __construct(private BlueprintExtensionLibrary $blueprint)
     {
     }
 
-    private function http(): PendingRequest
+    private function http(?string $key = null): PendingRequest
     {
-        $key = (string) $this->blueprint->dbGet('modpackinstaller', 'api_key');
+        $key ??= (string) $this->blueprint->dbGet('modpackinstaller', 'api_key');
         if ($key === '') {
             throw new CurseForgeException('No CurseForge API key is configured. Ask an administrator to set one.');
         }
@@ -46,6 +53,122 @@ class CurseForgeClient
 
         if (in_array($res->status(), [401, 403], true)) {
             throw new CurseForgeException('CurseForge rejected the API key (HTTP ' . $res->status() . '). Ask an administrator to check it.');
+        }
+
+        return $res;
+    }
+
+    /**
+     * Check the hardcoded game and class IDs against CurseForge: game GAME_ID_MINECRAFT must be Minecraft and
+     * CLASS_ID_MODPACKS must be a class of that game named Modpacks. Never throws; every failure (bad key,
+     * network, unexpected data) is reported in the result.
+     *
+     * @param string|null $apiKey key to test (e.g. one just entered by an admin); null uses the stored key
+     */
+    public function checkIds(?string $apiKey = null): IdCheckResult
+    {
+        $game = $this->checkRequest('/v1/games/' . self::GAME_ID_MINECRAFT, [], $apiKey);
+        if ($game instanceof IdCheckResult) {
+            return $game;
+        }
+        $data = $game->json('data');
+        if (!is_array($data) || !isset($data['id'])) {
+            return IdCheckResult::unexpected('/v1/games/' . self::GAME_ID_MINECRAFT . ' returned no game data.');
+        }
+        $gameName = self::text($data['name'] ?? '');
+        $gameSlug = self::text($data['slug'] ?? '');
+        if ((int) $data['id'] !== self::GAME_ID_MINECRAFT
+            || (strtolower($gameSlug) !== self::GAME_SLUG_MINECRAFT && strtolower($gameName) !== 'minecraft')) {
+            return IdCheckResult::mismatch(sprintf(
+                'Game %d is "%s" (slug "%s", id %d), not Minecraft.',
+                self::GAME_ID_MINECRAFT, $gameName, $gameSlug, (int) $data['id']
+            ));
+        }
+
+        $cats = $this->checkRequest('/v1/categories', ['gameId' => self::GAME_ID_MINECRAFT, 'classesOnly' => 'true'], $apiKey);
+        if ($cats instanceof IdCheckResult) {
+            return $cats;
+        }
+        $classes = $cats->json('data');
+        if (!is_array($classes)) {
+            return IdCheckResult::unexpected('/v1/categories returned no class list.');
+        }
+
+        $match = null;
+        $modpacksElsewhere = null;
+        foreach ($classes as $c) {
+            if (!is_array($c) || !isset($c['id'])) {
+                continue;
+            }
+            if ((int) $c['id'] === self::CLASS_ID_MODPACKS) {
+                $match = $c;
+            } elseif (strtolower(self::text($c['slug'] ?? '')) === self::CLASS_SLUG_MODPACKS) {
+                $modpacksElsewhere = $c;
+            }
+        }
+
+        if ($match === null) {
+            $msg = sprintf('Class %d is not among the %d classes CurseForge lists for game %d.',
+                self::CLASS_ID_MODPACKS, count($classes), self::GAME_ID_MINECRAFT);
+            if ($modpacksElsewhere !== null) {
+                $msg .= sprintf(' A class "%s" exists with id %d.', self::text($modpacksElsewhere['name'] ?? ''), (int) $modpacksElsewhere['id']);
+            }
+
+            return IdCheckResult::mismatch($msg);
+        }
+
+        $className = self::text($match['name'] ?? '');
+        $classSlug = self::text($match['slug'] ?? '');
+        $problems = [];
+        if (strtolower($classSlug) !== self::CLASS_SLUG_MODPACKS && strtolower($className) !== 'modpacks') {
+            $problems[] = sprintf('is named "%s" (slug "%s"), expected "Modpacks"', $className, $classSlug);
+        }
+        if (array_key_exists('isClass', $match) && $match['isClass'] !== true) {
+            $problems[] = 'is not marked as a class (isClass is false)';
+        }
+        if (isset($match['gameId']) && (int) $match['gameId'] !== self::GAME_ID_MINECRAFT) {
+            $problems[] = sprintf('belongs to game %d', (int) $match['gameId']);
+        }
+        if ($problems !== []) {
+            $msg = sprintf('Class %d %s.', self::CLASS_ID_MODPACKS, implode(', ', $problems));
+            if ($modpacksElsewhere !== null) {
+                $msg .= sprintf(' A class "%s" exists with id %d.', self::text($modpacksElsewhere['name'] ?? ''), (int) $modpacksElsewhere['id']);
+            }
+
+            return IdCheckResult::mismatch($msg);
+        }
+
+        return IdCheckResult::ok(sprintf(
+            'Game %d is %s and class %d is %s.', self::GAME_ID_MINECRAFT, $gameName, self::CLASS_ID_MODPACKS, $className
+        ));
+    }
+
+    /** A field from a CurseForge response as a short string, whatever type it arrived as. */
+    private static function text(mixed $value): string
+    {
+        return is_scalar($value) ? mb_substr((string) $value, 0, 100) : '';
+    }
+
+    /** One request for checkIds(): the response if it is a 200, otherwise the failure as a result. */
+    private function checkRequest(string $path, array $query, ?string $apiKey): Response|IdCheckResult
+    {
+        try {
+            // Short timeouts: this runs while the admin's save request waits.
+            $res = $this->http($apiKey)->timeout(10)->connectTimeout(5)->get($path, $query);
+        } catch (CurseForgeException $e) {
+            return IdCheckResult::failed(IdCheckResult::NO_KEY, $e->getMessage());
+        } catch (ConnectionException $e) {
+            return IdCheckResult::failed(IdCheckResult::UNREACHABLE, 'Could not reach the CurseForge API to check the IDs.');
+        }
+
+        if (in_array($res->status(), [401, 403], true)) {
+            return IdCheckResult::failed(IdCheckResult::AUTH, sprintf(
+                'CurseForge rejected the API key (HTTP %d on %s). The key was saved, but searches and installs will fail until it is fixed.',
+                $res->status(), $path
+            ));
+        }
+        if (!$res->ok()) {
+            return IdCheckResult::failed(IdCheckResult::HTTP_ERROR, sprintf('CurseForge returned HTTP %d for %s.', $res->status(), $path));
         }
 
         return $res;

@@ -22,15 +22,19 @@ CurseForge API key**: Wings download and extraction were tested with locally ser
 | `admin/` | Admin page for the CurseForge API key |
 | `app/CurseForgeClient.php` | CurseForge API wrapper (namespace `Pterodactyl\BlueprintFramework\Extensions\modpackinstaller`, symlinked by Blueprint) |
 | `app/ModpackInstallerController.php` | `search`, `resolve` and `install` endpoints |
+| `app/IdCheckResult.php` | Result of the game/class ID check run when an admin saves an API key |
 | `app/WingsPackInstaller.php` | Has Wings pull the archive into the server root, extract it, then delete the archive |
 | `routers/client.php` | Server-scoped routes |
 | `dashboard/` | React page and `Components.yml` registration (this directory is `dashboard.components`) |
+| `tests/` | Dev-only PHPUnit harness (`Http::fake()`, no network). Not installed by Blueprint. |
 
 ## Install (dev)
 
 1. Install Blueprint on your panel and enable developer mode.
 2. Copy this repo into the panel's Blueprint dev folder (`.blueprint/dev`), then run `blueprint -build`.
-3. Open Admin > Extensions > CurseForge Modpack Installer and enter your CurseForge API key.
+3. Open Admin > Extensions > CurseForge Modpack Installer and enter your CurseForge API key. Saving checks the
+   hardcoded game ID (432, Minecraft) and class ID (4471, Modpacks) against CurseForge and shows the result; a warning
+   does not stop the key from being saved.
 4. Open a server and use the "Modpack Installer" page.
 
 ## API (all under `/api/client/extensions/modpackinstaller/servers/{server}`)

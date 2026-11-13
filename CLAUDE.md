@@ -56,8 +56,9 @@ Corrected
 - Admin view no longer echoes the stored API key into the HTML; blank field keeps the current key.
 
 Still unknown (needs a real CurseForge API key)
-- CurseForge: game ID 432 and class ID 4471 are not stated in the docs; only seen in third-party usage
-  (itzg/docker-minecraft-server issue 3591). `downloadUrl` is documented as a plain string; null when the author disables
+- CurseForge game ID 432 and class ID 4471: **checked by code, not yet confirmed against the live API.** They are not
+  stated in the docs (only seen in third-party usage, itzg/docker-minecraft-server issue 3591). See "CurseForge ID check".
+- `downloadUrl` is documented as a plain string; null when the author disables
   distribution is community knowledge, handled defensively.
 - Which host CurseForge's `downloadUrl` uses, and that the redirect chain ends in a 200 for a real file
   (only a made-up path was tried: edge.forgecdn.net 302 -> mediafilez.forgecdn.net 403).
@@ -146,6 +147,28 @@ returns only `id, name, slug, summary, thumbnailUrl (https only), downloadCount,
 The React page debounces input (400 ms), ignores stale responses, shows loading/empty/error states, and a result click calls
 the existing `/resolve` flow with the project ID. Unknown: exact CurseForge pagination fields (`pagination.totalCount` is
 assumed from the Core API schema) and `hasServerPack` accuracy on real data.
+
+## CurseForge ID check (2026-11-13; tested with Http::fake() only)
+
+Status of game ID 432 / class ID 4471: **checked by code, not yet confirmed against the live API** (no real key was available).
+
+- Defined once, as `CurseForgeClient::GAME_ID_MINECRAFT` and `CurseForgeClient::CLASS_ID_MODPACKS`. Nothing else may hardcode them.
+- `CurseForgeClient::checkIds(?string $apiKey)` calls `GET /v1/games/432` and `GET /v1/categories?gameId=432&classesOnly=true`
+  and returns an `IdCheckResult` (`status` + `message`), never throws. Statuses: `ok`; `mismatch` (game is not Minecraft,
+  class 4471 missing, or not named Modpacks / not `isClass` / other gameId; names a `modpacks`-slug class under another ID
+  if one exists); `unexpected` (no data); `auth` (401/403); `unreachable` (connection error/timeout, 10 s / 5 s connect);
+  `http_error` (other non-200); `no_key`. Messages quote what CurseForge returned, never the key.
+- Runs when an admin saves a non-blank key, after the key is stored (never blocks saving). The result is flashed to the
+  session and shown on the admin page as a success or warning alert (escaped). A blank save skips it.
+- Assumed response shapes (from the Core API schema, not seen live): Game `{id,name,slug}`, Category `{id,gameId,name,slug,isClass}`.
+  The game passes on slug `minecraft` or name `Minecraft`; the class on slug `modpacks` or name `Modpacks`.
+- Tests: `tests/` is a dev-only harness (Orchestra Testbench 9 / Laravel 11, PHPUnit 11; stubs for the Blueprint libraries
+  and panel base classes in `tests/stubs`). Not part of the extension; Blueprint ignores it.
+  `composer install -d tests && tests/vendor/bin/phpunit -c tests/phpunit.xml`. `Http::preventStrayRequests()` is on, so no test
+  reaches the network. Covers: correct response, wrong class name, class missing (with and without a Modpacks class elsewhere),
+  not-a-class, wrong game, 401/403 on either call, network failure, 503, non-JSON, odd field types, stored vs given key, no key,
+  and the admin save (key stored in every case, success/warning rendered, HTML escaped, key not echoed, blank save sends nothing).
+- To confirm for real: save a real key on the admin page and read the alert. Then update the status above.
 
 ## Conventions
 
