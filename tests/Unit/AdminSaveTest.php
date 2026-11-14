@@ -12,6 +12,8 @@ use Pterodactyl\Http\Controllers\Admin\Extensions\modpackinstaller\modpackinstal
 
 /**
  * The admin save runs the ID check, never blocks saving on it, and shows the result on the admin page.
+ * The result quotes names CurseForge returned, so it is rendered in the same response and never put in the session
+ * (CurseForge API terms 3.1: no saving of data obtained through the API). The key can also be removed (terms, section 9).
  * Routes mirror the ones Blueprint registers (GET index / PATCH update); auth middleware is the panel's and not tested here.
  */
 class AdminSaveTest extends TestCase
@@ -52,15 +54,55 @@ class AdminSaveTest extends TestCase
     {
         Http::fake([CheckIdsTest::GAME_URL => Http::response(CheckIdsTest::game()), CheckIdsTest::CATEGORIES_URL => Http::response(CheckIdsTest::classes())]);
 
-        $this->save('  good-key  ')->assertRedirect('/admin/extensions/modpackinstaller')
-            ->assertSessionHas('modpackinstaller_id_check', fn ($v) => $v['status'] === 'ok' && $v['ok'] === true);
+        $response = $this->save('  good-key  ')->assertOk();
         $this->assertSame('good-key', FakeDb::$data['modpackinstaller::api_key']);
-
-        $html = $this->followingRedirects()->save('good-key')->assertOk()->getContent();
+        $html = $response->getContent();
         $this->assertStringContainsString('alert-success', $html);
         $this->assertStringContainsString('CurseForge confirmed the game and class IDs', $html);
         $this->assertStringContainsString('Game 432 is Minecraft and class 4471 is Modpacks.', $html);
         $this->assertStringNotContainsString('good-key', $html);
+    }
+
+    public function test_nothing_curseforge_returned_is_kept_in_the_session(): void
+    {
+        Http::fake([
+            CheckIdsTest::GAME_URL => Http::response(CheckIdsTest::game()),
+            CheckIdsTest::CATEGORIES_URL => Http::response(CheckIdsTest::classes(CheckIdsTest::category(4471, 'CANARY-CLASS-NAME', 'canary-class-slug'))),
+        ]);
+
+        $response = $this->save('some-key')->assertOk()->assertSee('CANARY-CLASS-NAME');
+
+        $response->assertSessionMissing('modpackinstaller_id_check');
+        $session = serialize(session()->all());
+        $this->assertStringNotContainsString('CANARY', $session);
+        $this->assertStringNotContainsString('canary-class-slug', $session);
+        $this->assertStringNotContainsString('some-key', $session);
+        // A later page view shows no result: it was never stored.
+        $this->get('/admin/extensions/modpackinstaller')->assertOk()->assertDontSee('CANARY-CLASS-NAME')->assertDontSee('alert-');
+    }
+
+    public function test_the_key_can_be_removed(): void
+    {
+        FakeDb::$data['modpackinstaller::api_key'] = 'old-key';
+        Http::fake();
+
+        $html = $this->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class)
+            ->patch('/admin/extensions/modpackinstaller', ['api_key' => '', 'remove_key' => '1'])
+            ->assertOk()->getContent();
+
+        $this->assertArrayNotHasKey('modpackinstaller::api_key', FakeDb::$data);
+        $this->assertStringContainsString('API key removed.', $html);
+        $this->assertStringContainsString('Paste your API key', $html);
+        $this->assertStringNotContainsString('old-key', $html);
+        Http::assertNothingSent();
+    }
+
+    public function test_the_remove_option_is_only_offered_when_a_key_is_saved(): void
+    {
+        $this->get('/admin/extensions/modpackinstaller')->assertOk()->assertDontSee('remove_key');
+        FakeDb::$data['modpackinstaller::api_key'] = 'old-key';
+        $this->get('/admin/extensions/modpackinstaller')->assertOk()->assertSee('remove_key')
+            ->assertSee('not affiliated with or endorsed by CurseForge');
     }
 
     public function test_mismatch_still_saves_and_shows_a_warning_with_what_curseforge_returned(): void
@@ -71,7 +113,7 @@ class AdminSaveTest extends TestCase
             CheckIdsTest::CATEGORIES_URL => Http::response(CheckIdsTest::classes(CheckIdsTest::category(4471, '<b>Bukkit</b> Plugins', 'bukkit-plugins'))),
         ]);
 
-        $html = $this->followingRedirects()->save('new-key')->assertOk()->getContent();
+        $html = $this->save('new-key')->assertOk()->getContent();
 
         $this->assertSame('new-key', FakeDb::$data['modpackinstaller::api_key']);
         $this->assertStringContainsString('alert-warning', $html);
@@ -86,7 +128,7 @@ class AdminSaveTest extends TestCase
     {
         Http::fake([CheckIdsTest::GAME_URL => Http::response('', 403)]);
 
-        $html = $this->followingRedirects()->save('bad-key')->assertOk()->getContent();
+        $html = $this->save('bad-key')->assertOk()->getContent();
 
         $this->assertSame('bad-key', FakeDb::$data['modpackinstaller::api_key']);
         $this->assertStringContainsString('alert-warning', $html);
@@ -99,7 +141,7 @@ class AdminSaveTest extends TestCase
             throw new ConnectException('cURL error 28: timed out', new PsrRequest('GET', $request->url()));
         });
 
-        $html = $this->followingRedirects()->save('some-key')->assertOk()->getContent();
+        $html = $this->save('some-key')->assertOk()->getContent();
 
         $this->assertSame('some-key', FakeDb::$data['modpackinstaller::api_key']);
         $this->assertStringContainsString('Could not reach the CurseForge API to check the IDs.', $html);
