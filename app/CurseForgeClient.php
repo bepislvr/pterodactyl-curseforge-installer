@@ -11,6 +11,10 @@ use Pterodactyl\BlueprintFramework\Libraries\ExtensionLibrary\Client\BlueprintCl
 /**
  * Thin wrapper around the CurseForge Core API (https://docs.curseforge.com).
  * Scope: modpacks that ship a server pack only.
+ *
+ * CurseForge 3rd Party API Terms, section 3.1: nothing obtained through the API may be saved or cached.
+ * This class must not write API data to the cache, database, session, files or logs, and must not retry
+ * requests automatically. Every call is made on an explicit user action and the result is only returned.
  */
 class CurseForgeClient
 {
@@ -51,11 +55,92 @@ class CurseForgeClient
             throw new CurseForgeException('Could not reach the CurseForge API. Please try again.');
         }
 
+        if ($res->status() === 429) {
+            throw new CurseForgeException(self::rateLimitMessage($res));
+        }
         if (in_array($res->status(), [401, 403], true)) {
-            throw new CurseForgeException('CurseForge rejected the API key (HTTP ' . $res->status() . '). Ask an administrator to check it.');
+            throw new CurseForgeException(
+                'CurseForge refused the request (HTTP ' . $res->status() . '). The API key may be invalid or its access may be limited. '
+                . 'Ask an administrator to check it.'
+            );
         }
 
         return $res;
+    }
+
+    /**
+     * Message for HTTP 429. Includes CurseForge's Retry-After value when it sent one. The request is never
+     * retried automatically: the user decides when to try again.
+     */
+    public static function rateLimitMessage(Response $res): string
+    {
+        $msg = 'CurseForge is limiting requests for this API key (HTTP 429).';
+        $retryAfter = trim((string) $res->header('Retry-After'));
+        if (preg_match('/^\d{1,6}$/', $retryAfter)) {
+            return $msg . ' Please wait ' . (int) $retryAfter . ' seconds before trying again.';
+        }
+        // The header may also be an HTTP date. Only show it if it is plain text of a sane length.
+        if ($retryAfter !== '' && preg_match('/^[A-Za-z0-9 ,:+\-]{1,40}$/', $retryAfter)) {
+            return $msg . ' Please try again after ' . $retryAfter . '.';
+        }
+
+        return $msg . ' Please wait a few minutes before trying again.';
+    }
+
+    /**
+     * Names of a project's authors, as plain strings.
+     *
+     * @return array<int,string>
+     */
+    private static function authorNames(mixed $mod): array
+    {
+        $names = [];
+        foreach ((is_array($mod) && is_array($mod['authors'] ?? null)) ? $mod['authors'] : [] as $author) {
+            $name = is_array($author) ? self::text($author['name'] ?? '') : '';
+            if ($name !== '') {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Link to the project's own page on curseforge.com, for credit and for manual downloads.
+     * Uses the URL CurseForge returned if it is an https curseforge.com URL, otherwise builds it from the slug.
+     */
+    public static function projectUrl(mixed $mod): ?string
+    {
+        $url = is_array($mod) && is_array($mod['links'] ?? null) ? ($mod['links']['websiteUrl'] ?? null) : null;
+        if (is_string($url)
+            && strtolower((string) parse_url($url, PHP_URL_SCHEME)) === 'https'
+            && preg_match('/(^|\.)curseforge\.com$/i', (string) (parse_url($url, PHP_URL_HOST) ?: '')) === 1) {
+            return $url;
+        }
+        $slug = is_array($mod) && is_scalar($mod['slug'] ?? null) ? (string) $mod['slug'] : '';
+        if (preg_match('/^[a-z0-9][a-z0-9\-_]*$/i', $slug)) {
+            return 'https://www.curseforge.com/minecraft/modpacks/' . $slug;
+        }
+
+        return null;
+    }
+
+    /**
+     * Authors can switch off distribution through third-party services (the "project distribution toggle").
+     * The API reports it as allowModDistribution (boolean or null). Only an explicit false means "disabled".
+     */
+    public static function distributionDisabled(mixed $mod): bool
+    {
+        return is_array($mod) && array_key_exists('allowModDistribution', $mod) && $mod['allowModDistribution'] === false;
+    }
+
+    private static function distributionDisabledException(mixed $mod): DistributionDisabledException
+    {
+        return new DistributionDisabledException(
+            'The author of this modpack has disabled downloads through third-party tools. '
+            . 'Download the server pack manually from its CurseForge page.',
+            self::projectUrl($mod)
+        );
     }
 
     /**
@@ -167,6 +252,9 @@ class CurseForgeClient
                 $res->status(), $path
             ));
         }
+        if ($res->status() === 429) {
+            return IdCheckResult::failed(IdCheckResult::HTTP_ERROR, self::rateLimitMessage($res));
+        }
         if (!$res->ok()) {
             return IdCheckResult::failed(IdCheckResult::HTTP_ERROR, sprintf('CurseForge returned HTTP %d for %s.', $res->status(), $path));
         }
@@ -220,6 +308,9 @@ class CurseForgeClient
                 'thumbnailUrl' => is_string($thumb) && str_starts_with($thumb, 'https://') ? $thumb : null,
                 'downloadCount' => (int) ($mod['downloadCount'] ?? 0),
                 'hasServerPack' => $hasServerPack,
+                'authors' => self::authorNames($mod),
+                'projectUrl' => self::projectUrl($mod),
+                'distributionDisabled' => self::distributionDisabled($mod),
             ];
         }
 
@@ -239,7 +330,9 @@ class CurseForgeClient
     /**
      * Accepts a numeric project ID, a CurseForge modpack URL, or a bare slug.
      *
-     * @return array{id:int,name:string,slug:string}
+     * Refuses (DistributionDisabledException) when the author has disabled third-party distribution.
+     *
+     * @return array{id:int,name:string,slug:string,authors:array<int,string>,projectUrl:?string}
      */
     public function resolveModpack(string $reference): array
     {
@@ -265,12 +358,24 @@ class CurseForgeClient
                 'slug' => strtolower($slug),
             ]);
             if (!$res->ok() || empty($res->json('data'))) {
-                throw new CurseForgeException('No modpack found for "' . $reference . '".');
+                throw new CurseForgeException(
+                    'No modpack found for "' . $reference . '". It may not exist, or its author may not allow third-party tools.'
+                );
             }
             $mod = $res->json('data')[0];
         }
 
-        return ['id' => (int) $mod['id'], 'name' => $mod['name'], 'slug' => $mod['slug']];
+        if (self::distributionDisabled($mod)) {
+            throw self::distributionDisabledException($mod);
+        }
+
+        return [
+            'id' => (int) $mod['id'],
+            'name' => $mod['name'],
+            'slug' => $mod['slug'],
+            'authors' => self::authorNames($mod),
+            'projectUrl' => self::projectUrl($mod),
+        ];
     }
 
     /**
@@ -305,31 +410,36 @@ class CurseForgeClient
     /**
      * Download info for a server pack file.
      *
+     * The author's distribution setting is checked again here, at install time: the project is fetched and an
+     * explicit allowModDistribution=false is refused before the file is even looked up. If CurseForge then
+     * withholds the file's downloadUrl, that is treated as the author's refusal as well. No other way of
+     * obtaining the file is tried.
+     *
      * @return array{url:string,fileName:string}
      */
     public function serverPackDownload(int $modId, int $serverPackFileId): array
     {
+        $modRes = $this->get("/v1/mods/{$modId}");
+        if (!$modRes->ok()) {
+            throw new CurseForgeException('Modpack not found (CurseForge returned ' . $modRes->status() . ').');
+        }
+        $mod = $modRes->json('data');
+        if (self::distributionDisabled($mod)) {
+            throw self::distributionDisabledException($mod);
+        }
+
         $res = $this->get("/v1/mods/{$modId}/files/{$serverPackFileId}");
         if (!$res->ok()) {
             throw new CurseForgeException('Server pack file not found (CurseForge returned ' . $res->status() . ').');
         }
         $file = $res->json('data');
-        $url = $file['downloadUrl'] ?? null;
+        $url = is_array($file) ? ($file['downloadUrl'] ?? null) : null;
 
-        if (!$url) {
-            // Authors can disable third-party downloads, which hides downloadUrl. Try the dedicated
-            // endpoint before giving up.
-            $dl = $this->get("/v1/mods/{$modId}/files/{$serverPackFileId}/download-url");
-            $url = $dl->ok() ? $dl->json('data') : null;
+        if (!is_string($url) || $url === '') {
+            throw self::distributionDisabledException($mod);
         }
 
-        if (!$url) {
-            throw new CurseForgeException(
-                'The author has disabled third-party downloads for this server pack. Download it manually from CurseForge.'
-            );
-        }
-
-        return ['url' => $this->resolveCdnUrl((string) $url), 'fileName' => $file['fileName']];
+        return ['url' => $this->resolveCdnUrl($url), 'fileName' => $file['fileName']];
     }
 
     /** https and a CurseForge host. The only URLs ever handed to Wings. */
