@@ -14,4 +14,12 @@ trait FakeStore
     {
         FakeDb::$data["$table::$record"] = $value;
     }
+
+    public function dbForget(string $table, string $record): bool
+    {
+        $existed = array_key_exists("$table::$record", FakeDb::$data);
+        unset(FakeDb::$data["$table::$record"]);
+
+        return $existed;
+    }
 }

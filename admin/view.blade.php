@@ -1,5 +1,9 @@
-@php($idCheck = session('modpackinstaller_id_check'))
-@if (is_array($idCheck))
+@if (!empty($keyRemoved))
+  <div class="alert alert-success">
+    <strong>API key removed.</strong> Search and installs are disabled until a new key is saved.
+  </div>
+@endif
+@if (isset($idCheck) && is_array($idCheck))
   <div class="alert {{ $idCheck['ok'] ? 'alert-success' : 'alert-warning' }}">
     <strong>API key saved.</strong>
     @if ($idCheck['ok'])
@@ -27,10 +31,21 @@
           autocomplete="off"
         />
         <p class="text-muted small">
-          Get a key from the CurseForge for Studios console. It is stored in the Blueprint database
-          and only used server-side.
+          Apply for your own key with CurseForge (see the README, "Terms and compliance"). A key is personal:
+          do not share it or reuse someone else's. It is stored in the panel database, only used server-side
+          and never shown again.
         </p>
       </div>
+      @if ($hasKey)
+        <div class="checkbox">
+          <label>
+            <input type="checkbox" name="remove_key" value="1" /> Remove the saved key
+          </label>
+        </div>
+      @endif
+      <p class="text-muted small">
+        This extension is not affiliated with or endorsed by CurseForge or Overwolf.
+      </p>
     </div>
     <div class="box-footer">
       {!! csrf_field() !!}
